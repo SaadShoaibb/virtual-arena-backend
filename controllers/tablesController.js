@@ -99,10 +99,47 @@ const createTables = async () => {
                 user_id INT,
                 tournament_id INT,
                 status ENUM('registered', 'completed'),
+                payment_status ENUM('pending', 'paid') DEFAULT 'pending',
                 FOREIGN KEY (user_id) REFERENCES Users(user_id),
                 FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
             );`
         )
+        
+        // Add payment_status column to TournamentRegistrations if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM TournamentRegistrations LIKE 'payment_status';
+            `);
+            
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE TournamentRegistrations
+                    ADD COLUMN payment_status ENUM('pending', 'paid') DEFAULT 'pending';
+                `);
+                console.log('payment_status column added successfully');
+            }
+        } catch (error) {
+            console.log('Error adding payment_status column:', error.message);
+        }
+        
+        // Add payment_option column to TournamentRegistrations if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM TournamentRegistrations LIKE 'payment_option';
+            `);
+            
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE TournamentRegistrations
+                    ADD COLUMN payment_option ENUM('online', 'at_event') DEFAULT 'online';
+                `);
+                console.log('payment_option column added successfully');
+            }
+        } catch (error) {
+            console.log('Error adding payment_option column:', error.message);
+        }
 
         // Products
         await db.query(`
@@ -118,6 +155,7 @@ const createTables = async () => {
                 size VARCHAR(50),
                 stock INT DEFAULT 0,
                 is_active BOOLEAN DEFAULT TRUE,
+                category VARCHAR(100),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );`
         )
@@ -173,10 +211,13 @@ const createTables = async () => {
                 order_item_id INT AUTO_INCREMENT PRIMARY KEY,
                 order_id INT,
                 product_id INT,
+                tournament_id INT,
                 quantity INT NOT NULL,
                 price DECIMAL(10, 2) NOT NULL,
+                item_type ENUM('product', 'tournament') DEFAULT 'product',
                 FOREIGN KEY (order_id) REFERENCES Orders(order_id),
-                FOREIGN KEY (product_id) REFERENCES Products(product_id)
+                FOREIGN KEY (product_id) REFERENCES Products(product_id),
+                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
             );`
         )
 
@@ -224,6 +265,7 @@ const createTables = async () => {
                 gift_card_id INT AUTO_INCREMENT PRIMARY KEY,
                 code VARCHAR(50) UNIQUE NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
+                category VARCHAR(100) DEFAULT 'Gift Cards',
                 issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status ENUM('active', 'redeemed', 'expired') DEFAULT 'active',
                 created_by INT NOT NULL, -- Admin user ID
@@ -249,13 +291,46 @@ const createTables = async () => {
             CREATE TABLE IF NOT EXISTS Cart (
                 cart_id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
-                product_id INT NOT NULL,
+                product_id INT,
+                tournament_id INT,
                 quantity INT NOT NULL DEFAULT 1,
+                item_type ENUM('product', 'tournament') DEFAULT 'product',
+                payment_option ENUM('online', 'at_event') DEFAULT 'online',
                 createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
-                FOREIGN KEY (product_id) REFERENCES Products(product_id) ON DELETE CASCADE
+                FOREIGN KEY (product_id) REFERENCES Products(product_id) ON DELETE CASCADE,
+                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id) ON DELETE CASCADE
             );`
         );
+        
+        // Ensure product_id in Cart is nullable for tournament entries
+        try {
+            const [columns] = await db.query(`SHOW COLUMNS FROM Cart LIKE 'product_id';`);
+            if (columns.length && columns[0].Null !== 'YES') {
+                await db.query(`ALTER TABLE Cart MODIFY COLUMN product_id INT NULL;`);
+                console.log('product_id column in Cart set to NULLABLE successfully');
+            }
+        } catch (error) {
+            console.log('Error altering product_id column in Cart:', error.message);
+        }
+
+        // Add payment_option column to Cart if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM Cart LIKE 'payment_option';
+            `);
+            
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE Cart
+                    ADD COLUMN payment_option ENUM('online', 'at_event') DEFAULT 'online';
+                `);
+                console.log('payment_option column added to Cart successfully');
+            }
+        } catch (error) {
+            console.log('Error adding payment_option column to Cart:', error.message);
+        }
 
         //Wishlist Table
         await db.query(`
@@ -302,7 +377,15 @@ const createTables = async () => {
             );
         `);
 
-
+        // Ensure Products table has 'category' column
+        try {
+            await db.query("ALTER TABLE Products ADD COLUMN category VARCHAR(100)");
+        } catch (err) {
+            // Ignore error if column already exists
+            if (!err.message.includes('Duplicate column name') && !err.message.includes('already exists')) {
+                console.error('Error altering Products table:', err);
+            }
+        }
 
         console.log("Table Has been created")
     } catch (error) {

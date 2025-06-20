@@ -155,7 +155,7 @@ const deleteTournament = async (req, res) => {
 //register for tournament 
 const registerForTournament = async (req, res) => {
     try {
-        const { tournament_id } = req.body;
+        const { tournament_id, payment_status, payment_option } = req.body;
         const user_id = req.user?.id; // Get user ID from authenticated request
 
         // Validate required fields
@@ -179,18 +179,23 @@ const registerForTournament = async (req, res) => {
             });
         }
 
-        // Register the user for the tournament
+        // Set payment status (default to 'pending' if not provided)
+        const paymentStatus = payment_status || 'pending';
+        // Set payment option (default to 'online' if not provided)
+        const paymentOption = payment_option || 'online';
+
+        // Register the user for the tournament with payment status and payment option
         const [result] = await db.query(`
-            INSERT INTO TournamentRegistrations (user_id, tournament_id, status) 
-            VALUES (?, ?, 'registered')
-        `, [user_id, tournament_id]);
+            INSERT INTO TournamentRegistrations (user_id, tournament_id, status, payment_status, payment_option) 
+            VALUES (?, ?, 'registered', ?, ?)
+        `, [user_id, tournament_id, paymentStatus, paymentOption]);
 
         // Send notification to user
         await sendNotification(
             user_id, // User ID
             'booking_confirmation', // Notification type
             'Tournament Registration', // Subject
-            'You have been registered for the tournament.', // Message
+            `You have been registered for the tournament. Payment status: ${paymentStatus}.`, // Message
             'email', // Delivery method
             `/tournaments?tournament_id=${tournament_id}` // Link
         );
@@ -205,15 +210,17 @@ const registerForTournament = async (req, res) => {
         );
         // Step 6: Trigger Pusher event
         pusher.trigger('my-channel', 'my-event', {
-            message: 'Registered For tournament',
+            message: 'New Tournament Registration',
             tournamentId: tournament_id,
             userId: user_id
         });
 
         res.status(201).json({
             success: true,
-            message: 'User registered for tournament successfully',
+            message: 'Successfully registered for tournament',
             registration_id: result.insertId,
+            payment_status: paymentStatus,
+            payment_option: paymentOption
         });
     } catch (error) {
         console.error(error);
@@ -235,7 +242,9 @@ const getAllRegistrations = async (req, res) => {
                 r.*, 
                 u.name AS user_name, 
                 t.name AS tournament_name,
-                t.status AS tournament_status
+                t.status AS tournament_status,
+                r.payment_status,
+                r.payment_option
             FROM 
                 TournamentRegistrations r
             JOIN 
@@ -363,6 +372,69 @@ const deleteRegistration = async (req, res) => {
 };
 
 
+// Update registration
+const updateRegistration = async (req, res) => {
+    try {
+        const { registration_id } = req.params;
+        const { status, payment_status, payment_option } = req.body;
+
+        // Build the SQL query dynamically based on provided fields
+        let updateFields = [];
+        let queryParams = [];
+
+        if (status) {
+            updateFields.push('status = ?');
+            queryParams.push(status);
+        }
+
+        if (payment_status) {
+            updateFields.push('payment_status = ?');
+            queryParams.push(payment_status);
+        }
+
+        if (payment_option) {
+            updateFields.push('payment_option = ?');
+            queryParams.push(payment_option);
+        }
+
+        // If no fields to update, return error
+        if (updateFields.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No fields provided for update',
+            });
+        }
+
+        // Add registration_id to query params
+        queryParams.push(registration_id);
+
+        const [result] = await db.query(`
+            UPDATE TournamentRegistrations 
+            SET ${updateFields.join(', ')} 
+            WHERE registration_id = ?
+        `, queryParams);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Registration not found',
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Registration updated successfully',
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating registration',
+            error: error.message,
+        });
+    }
+};
+
 module.exports = {
     addTournament,
     getAllTournaments,
@@ -373,5 +445,6 @@ module.exports = {
     getAllRegistrations,
     getUserRegistrations,
     getRegistrationById,
-    deleteRegistration
+    deleteRegistration,
+    updateRegistration
 }

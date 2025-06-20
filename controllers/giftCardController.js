@@ -3,7 +3,7 @@ const crypto = require("crypto");
 // Admin creates a new gift card
 const createGiftCard = async (req, res) => {
     try {
-        const { code, amount } = req.body;
+        const { code, amount, category } = req.body;
         const created_by = req.user.id;
 
         if (!code || !amount || !created_by) {
@@ -11,8 +11,8 @@ const createGiftCard = async (req, res) => {
         }
 
         const [result] = await db.query(
-            "INSERT INTO GiftCards (code, amount, created_by) VALUES (?, ?, ?)",
-            [code, amount, created_by]
+            "INSERT INTO GiftCards (code, amount, category, created_by) VALUES (?, ?, ?, ?)",
+            [code, amount, category || 'Gift Cards', created_by]
         );
 
         res.status(201).json({ message: "Gift card created successfully", gift_card_id: result.insertId });
@@ -58,11 +58,11 @@ const getGiftCardById = async (req, res) => {
 const updateGiftCard = async (req, res) => {
     try {
         const { id } = req.params;
-        const { code, amount, status } = req.body;
+        const { code, amount, status, category } = req.body;
 
         await db.query(
-            "UPDATE GiftCards SET code = ?, amount = ?, status = ? WHERE gift_card_id = ?",
-            [code, amount, status, id]
+            "UPDATE GiftCards SET code = ?, amount = ?, status = ?, category = ? WHERE gift_card_id = ?",
+            [code, amount, status, category || 'Gift Cards', id]
         );
 
         res.status(200).json({ message: "Gift card updated successfully" });

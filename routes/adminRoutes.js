@@ -6,7 +6,7 @@ const upload = require('../middlewares/uploadMiddleware');
 const isAdmin = require('../middlewares/adminMiddleware');
 const { createSession, getSessionById, getAllSessions, updateSession, deleteSession } = require('../controllers/sessionsController');
 const { getAllBookings, updateBooking, deleteBooking, getBookingById } = require('../controllers/bookingController');
-const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration } = require('../controllers/tournamentController');
+const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration, updateRegistration } = require('../controllers/tournamentController');
 const { addProduct, getAllProducts, getProductById, updateProduct, deleteProduct } = require('../controllers/productController');
 const { createOrder, getAllOrders, getOrderById, updateOrderStatus, deleteOrder, getOrderItemsByOrderId, deleteOrderItem } = require('../controllers/orderController');
 const { getAllUsers, updateUserByAdmin, deleteUser } = require('../controllers/authController');
@@ -43,6 +43,7 @@ router.delete('/delete-tournament/:tournament_id',isAuthenticated,isAdmin,delete
 // tournament Registrations
 router.get('/tournament-registrations/',isAuthenticated,isAdmin,getAllRegistrations)
 router.get('/tournament-registration/:registration_id',isAuthenticated,isAdmin,getRegistrationById)
+router.put('/update-registration/:registration_id',isAuthenticated,isAdmin,updateRegistration)
 router.delete('/delete-registration/:registration_id',isAuthenticated,isAdmin,deleteRegistration)
 
 

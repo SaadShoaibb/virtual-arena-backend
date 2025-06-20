@@ -5,18 +5,18 @@ const path = require('path'); // For handling file paths
 // Add a Product
 const addProduct = async (req, res) => {
     try {
-        const { name, description, original_price, discount_price, stock, color, size, shipping_info,is_active,discount } = req.body;
+        const { name, description, original_price, discount_price, stock, color, size, shipping_info, is_active, discount, category } = req.body;
         const imageFiles = req.files; // Get uploaded images
 
         // Validate required fields
-        if (!name || !description || !original_price || !discount_price || !stock || !color || !size || !shipping_info|| !discount  || !imageFiles) {
-            return res.status(400).json({ success: false, message: 'All fields and images are required' });
+        if (!name || !description || !original_price || !discount_price || !stock || !color || !size || !shipping_info || !discount || !imageFiles || !category) {
+            return res.status(400).json({ success: false, message: 'All fields, images, and category are required' });
         }
 
         // Insert the product into the Products table
         const insertProductQuery = `
-            INSERT INTO Products (name, description, original_price,discount_price, stock, color, size, shipping_info,is_active,discount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?);
+            INSERT INTO Products (name, description, original_price, discount_price, stock, color, size, shipping_info, is_active, discount, category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         `;
         const [result] = await db.query(insertProductQuery, [
             name,
@@ -28,7 +28,8 @@ const addProduct = async (req, res) => {
             size,   // Store sizes as JSON array
             shipping_info,
             is_active,
-            discount
+            discount,
+            category
         ]);
         const productId = result.insertId; // Get the newly inserted product's ID
 
@@ -91,7 +92,7 @@ const getProductById = async (req, res) => {
 // Update a Product
 const updateProduct = async (req, res) => {
     const { id } = req.params;
-    const { name, description, original_price,discount_price, stock, color, size,shipping_info } = req.body;
+    const { name, description, original_price, discount_price, stock, color, size, shipping_info, category } = req.body;
     const imageFiles = req.files; // Get uploaded images
 
     try {
@@ -130,6 +131,10 @@ const updateProduct = async (req, res) => {
         if (shipping_info !== undefined) {
             updateFields.push('shipping_info = ?');
             updateValues.push(shipping_info);
+        }
+        if (category !== undefined) {
+            updateFields.push('category = ?');
+            updateValues.push(category);
         }
 
         // If no fields are provided to update, return an error
