@@ -6,7 +6,6 @@ const dotenv = require('dotenv');
 const path = require('path');
 const mySqlPool = require('./config/db');
 const { createTables } = require('./controllers/tablesController'); // Import createTables
-const bodyParser = require('body-parser'); // Added for Stripe raw body support
 
 // Load environment variables
 dotenv.config();
@@ -17,11 +16,31 @@ const app = express();
 // Middleware
 app.use(cors());
 
-// Stripe webhook must use raw body parser
-app.use('/api/v1/payment/webhook', bodyParser.raw({ type: 'application/json' }));
+// Special handling for Stripe webhooks - needs raw body for signature verification
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/v1/payment/webhook') {
+        console.log('Received webhook request to:', req.originalUrl);
+        next(); // Skip body parsing for webhook route
+    } else {
+        express.json()(req, res, next); // Parse JSON for all other routes
+    }
+});
 
-// Use normal JSON parser for all other routes
-app.use(bodyParser.json());
+// Add a raw body buffer for the webhook route
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/v1/payment/webhook' && req.method === 'POST') {
+        let rawBody = '';
+        req.on('data', (chunk) => {
+            rawBody += chunk.toString();
+        });
+        req.on('end', () => {
+            req.rawBody = rawBody;
+            next();
+        });
+    } else {
+        next();
+    }
+});
 
 app.use(morgan('dev'));
 

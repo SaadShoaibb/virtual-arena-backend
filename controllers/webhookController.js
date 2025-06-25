@@ -11,12 +11,20 @@ const handleStripeWebhook = async (req, res) => {
     
     // Get the signature from the headers
     const signature = req.headers['stripe-signature'];
-    const payload = req.body;
+    const payload = req.rawBody || req.body;
     
     if (!signature) {
         console.error('No Stripe signature found in webhook request');
         return res.status(400).json({ success: false, message: 'No signature found' });
     }
+    
+    if (!payload) {
+        console.error('No request body found in webhook request');
+        return res.status(400).json({ success: false, message: 'No request body found' });
+    }
+    
+    console.log('Webhook signature:', signature);
+    console.log('Webhook secret available:', !!webhookSecret);
     
     let event;
     
@@ -220,18 +228,32 @@ async function handleCheckoutSession(session) {
         id: session.id,
         payment_status: session.payment_status,
         payment_intent: session.payment_intent,
-        metadata: session.metadata
+        metadata: session.metadata,
+        customer: session.customer,
+        customer_email: session.customer_email,
+        amount_total: session.amount_total
     }, null, 2));
     
     // If you're using Checkout Sessions instead of Payment Intents directly
     if (session.payment_status === 'paid') {
         // Update the database with the checkout session information
         try {
-            await db.query(
-                "UPDATE Payments SET status = 'succeeded' WHERE checkout_session_id = ?",
+            // First check if we have a record for this checkout session
+            const [paymentRecords] = await db.query(
+                "SELECT * FROM Payments WHERE checkout_session_id = ?",
                 [session.id]
             );
-            console.log(`Updated payment status for checkout_session_id: ${session.id}`);
+            
+            if (paymentRecords && paymentRecords.length > 0) {
+                // Update existing record
+                await db.query(
+                    "UPDATE Payments SET status = 'succeeded' WHERE checkout_session_id = ?",
+                    [session.id]
+                );
+                console.log(`Updated payment status for checkout_session_id: ${session.id}`);
+            } else {
+                console.log(`No payment record found for checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
+            }
         } catch (err) {
             console.error('Error updating payment status for checkout session:', err);
         }
@@ -356,16 +378,39 @@ async function handleFailedCheckoutSession(session) {
     console.log('Failed Checkout Session Data:', JSON.stringify({
         id: session.id,
         payment_status: session.payment_status,
-        metadata: session.metadata
+        metadata: session.metadata,
+        payment_intent: session.payment_intent,
+        customer: session.customer,
+        customer_email: session.customer_email,
+        amount_total: session.amount_total,
+        failure_message: session.last_payment_error?.message
     }, null, 2));
     
     // Update the payment status in the database
     try {
-        await db.query(
-            "UPDATE Payments SET status = 'failed' WHERE checkout_session_id = ?",
+        // First check if we have a record for this checkout session
+        const [paymentRecords] = await db.query(
+            "SELECT * FROM Payments WHERE checkout_session_id = ?",
             [session.id]
         );
-        console.log(`Updated payment status to 'failed' for checkout_session_id: ${session.id}`);
+        
+        if (paymentRecords && paymentRecords.length > 0) {
+            // Update existing record
+            await db.query(
+                "UPDATE Payments SET status = 'failed', error_message = ? WHERE checkout_session_id = ?",
+                [session.last_payment_error?.message || 'Payment failed', session.id]
+            );
+            console.log(`Updated payment status to 'failed' for checkout_session_id: ${session.id}`);
+            
+            // Get user information for notification
+            const { user_id, entity_type, entity_id } = session.metadata || {};
+            if (user_id) {
+                // Here you could implement notification logic (email, SMS, etc.)
+                console.log(`Payment failed for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
+            }
+        } else {
+            console.log(`No payment record found for failed checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
+        }
     } catch (err) {
         console.error('Error updating payment status for failed checkout session:', err);
     }
@@ -436,16 +481,38 @@ async function handleExpiredCheckoutSession(session) {
     console.log('Expired Checkout Session Data:', JSON.stringify({
         id: session.id,
         payment_status: session.payment_status,
-        metadata: session.metadata
+        metadata: session.metadata,
+        payment_intent: session.payment_intent,
+        customer: session.customer,
+        customer_email: session.customer_email,
+        amount_total: session.amount_total
     }, null, 2));
     
     // Update the payment status in the database
     try {
-        await db.query(
-            "UPDATE Payments SET status = 'expired' WHERE checkout_session_id = ?",
+        // First check if we have a record for this checkout session
+        const [paymentRecords] = await db.query(
+            "SELECT * FROM Payments WHERE checkout_session_id = ?",
             [session.id]
         );
-        console.log(`Updated payment status to 'expired' for checkout_session_id: ${session.id}`);
+        
+        if (paymentRecords && paymentRecords.length > 0) {
+            // Update existing record
+            await db.query(
+                "UPDATE Payments SET status = 'expired' WHERE checkout_session_id = ?",
+                [session.id]
+            );
+            console.log(`Updated payment status to 'expired' for checkout_session_id: ${session.id}`);
+            
+            // Get user information for notification
+            const { user_id, entity_type, entity_id } = session.metadata || {};
+            if (user_id) {
+                // Here you could implement notification logic (email, SMS, etc.)
+                console.log(`Payment session expired for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
+            }
+        } else {
+            console.log(`No payment record found for expired checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
+        }
     } catch (err) {
         console.error('Error updating payment status for expired checkout session:', err);
     }
@@ -516,16 +583,43 @@ async function handleFailedPaymentIntent(paymentIntent) {
     console.log('Failed Payment Intent Data:', JSON.stringify({
         id: paymentIntent.id,
         status: paymentIntent.status,
-        metadata: paymentIntent.metadata
+        amount: paymentIntent.amount,
+        currency: paymentIntent.currency,
+        metadata: paymentIntent.metadata,
+        last_payment_error: paymentIntent.last_payment_error,
+        error_message: paymentIntent.last_payment_error?.message
     }, null, 2));
+    
+    // Extract error information
+    const errorMessage = paymentIntent.last_payment_error?.message || 'Payment failed';
+    const errorCode = paymentIntent.last_payment_error?.code || 'unknown';
     
     // Update the payment status in the database
     try {
-        await db.query(
-            "UPDATE Payments SET status = 'failed' WHERE payment_intent_id = ?",
+        // First check if we have a record for this payment intent
+        const [paymentRecords] = await db.query(
+            "SELECT * FROM Payments WHERE payment_intent_id = ?",
             [paymentIntent.id]
         );
-        console.log(`Updated payment status to 'failed' for payment_intent_id: ${paymentIntent.id}`);
+        
+        if (paymentRecords && paymentRecords.length > 0) {
+            // Update existing record
+            await db.query(
+                "UPDATE Payments SET status = 'failed', error_message = ?, error_code = ? WHERE payment_intent_id = ?",
+                [errorMessage, errorCode, paymentIntent.id]
+            );
+            console.log(`Updated payment status to 'failed' for payment_intent_id: ${paymentIntent.id}`);
+            
+            // Get user information for notification
+            const { user_id, entity_type, entity_id } = paymentIntent.metadata || {};
+            if (user_id) {
+                // Here you could implement notification logic (email, SMS, etc.)
+                console.log(`Payment failed for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
+                console.log(`Error message: ${errorMessage}`);
+            }
+        } else {
+            console.log(`No payment record found for failed payment_intent_id: ${paymentIntent.id}. This might be a webhook test or an external payment.`);
+        }
     } catch (err) {
         console.error('Error updating payment status for failed payment intent:', err);
     }

@@ -15,7 +15,17 @@ router.post('/confirm_payment', isAuthenticated, confirmPayment);
 router.get('/payment-details', isAuthenticated, isAdmin, getPaymentDetails);
 
 // Stripe Webhook - No authentication middleware as it's called by Stripe
+// The express.raw middleware is important to preserve the raw body for signature verification
 router.post('/webhook', express.raw({type: 'application/json'}), handleStripeWebhook);
+
+// Add a route to verify webhook configuration
+router.get('/webhook-status', (req, res) => {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    res.json({
+        webhook_configured: !!webhookSecret,
+        webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`
+    });
+});
 
 // Connected Accounts routes
 // Create a connected account

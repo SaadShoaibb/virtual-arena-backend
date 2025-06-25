@@ -8,6 +8,7 @@ This guide will help you set up and test the Stripe payment integration for Virt
 
 1. A Stripe account (you can sign up at [stripe.com](https://stripe.com))
 2. Stripe CLI for local webhook testing (optional but recommended)
+3. Your backend server accessible via HTTPS (for production) or using Stripe CLI (for local development)
 
 ## Configuration Steps
 
@@ -33,7 +34,13 @@ This guide will help you set up and test the Stripe payment integration for Virt
 1. Go to Developers > Webhooks in your Stripe Dashboard
 2. Click "Add endpoint"
 3. Enter your webhook URL: `https://your-domain.com/api/v1/payment/webhook`
-4. Select events to listen for (at minimum, select `payment_intent.succeeded` and `checkout.session.completed`)
+4. Select events to listen for:
+   - `checkout.session.async_payment_failed`
+   - `checkout.session.async_payment_succeeded`
+   - `checkout.session.completed`
+   - `checkout.session.expired`
+   - `payment_intent.succeeded`
+   - `payment_intent.payment_failed`
 5. Click "Add endpoint"
 6. Copy the "Signing secret" and add it to your `.env` file:
    ```
@@ -55,6 +62,39 @@ This guide will help you set up and test the Stripe payment integration for Virt
    ```
    STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret_from_cli
    ```
+
+### 4. Configure Nginx for Production
+
+If you're using Nginx in production, ensure it's properly configured to handle webhook requests. Use the provided `nginx.conf.example` as a reference:
+
+```nginx
+location /api/v1/payment/webhook {
+    proxy_pass http://localhost:8080/api/v1/payment/webhook;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # Important: Don't buffer the request body for webhooks
+    proxy_buffering off;
+    
+    # Increase timeouts for webhook processing
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+```
+
+## Payment Methods
+
+### 1. Payment Intents API
+
+The Payment Intents API is used for direct payment processing on your site. This is implemented in the `createPaymentIntent` function in `paymentController.js`.
+
+### 2. Checkout Sessions API
+
+The Checkout Sessions API redirects customers to Stripe's hosted checkout page. This is implemented in the `createCheckoutSession` function in `paymentController.js`.
 
 ## Testing Payments
 
@@ -80,6 +120,16 @@ For all test cards, you can use:
 5. Enter test card details
 6. Complete the payment
 
+### Testing Webhooks
+
+You can trigger test webhook events using the Stripe CLI:
+
+```bash
+stripe trigger checkout.session.completed
+stripe trigger payment_intent.succeeded
+stripe trigger checkout.session.async_payment_failed
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -89,15 +139,46 @@ For all test cards, you can use:
    - Verify that Stripe.js is loading correctly
    - Ensure your publishable key is correct
 
-2. **Payment fails**
-   - Check the Stripe Dashboard for error messages
-   - Verify you're using a valid test card number
-   - Check server logs for any backend errors
+2. **Payment fails with 401 Unauthorized**
+   - Check that authentication is working correctly
+   - Verify the token is being sent with the correct format (Bearer token)
+   - Check server logs for authentication errors
 
-3. **Webhook not receiving events**
+3. **Payment fails with 404 Not Found**
+   - Verify the API URL is correct
+   - Check that the route is properly defined in your backend
+   - Ensure the API is accessible from your frontend
+
+4. **Webhook not receiving events**
    - Verify your webhook URL is accessible
    - Check that your webhook secret is correct
    - Look for any errors in your server logs
+   - Ensure your Nginx configuration preserves the raw request body
+
+5. **Signature verification failed**
+   - Ensure the webhook secret in your `.env` file matches the one from Stripe
+   - Verify that your server configuration preserves the raw request body
+   - Check that you're not using body parsers for the webhook endpoint
+
+## Debugging Tips
+
+1. Add additional logging in your webhook controller:
+
+```javascript
+console.log('Webhook received:', event.type);
+console.log('Event data:', JSON.stringify(event.data.object, null, 2));
+```
+
+2. Check Stripe Dashboard for webhook delivery attempts and failures
+
+3. Use the `/api/v1/payment/webhook-status` endpoint to verify your webhook configuration
+
+## Additional Resources
+
+- [Stripe API Documentation](https://stripe.com/docs/api)
+- [Stripe Webhooks Documentation](https://stripe.com/docs/webhooks)
+- [Stripe CLI Documentation](https://stripe.com/docs/stripe-cli)
+- [Stripe Testing Documentation](https://stripe.com/docs/testing)
 
 ### Viewing Payments in Stripe Dashboard
 

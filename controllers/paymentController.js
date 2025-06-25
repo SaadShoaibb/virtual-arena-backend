@@ -246,7 +246,18 @@ const createCheckoutSession = async (req, res) => {
                 entity_id,
                 entity_type,
                 user_name: userName,
-                connected_account_id: connected_account_id || null
+                connected_account_id: connected_account_id || null,
+                created_at: new Date().toISOString()
+            },
+            // Ensure we get a payment_intent object with the checkout session
+            payment_intent_data: {
+                metadata: {
+                    user_id,
+                    entity_id,
+                    entity_type,
+                    user_name: userName,
+                    connected_account_id: connected_account_id || null
+                }
             }
         };
         
@@ -277,7 +288,56 @@ const createCheckoutSession = async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating checkout session:', error);
-        res.status(500).json({ message: "Internal Server Error" });
+        
+        // Provide more detailed error information
+        let errorMessage = "Internal Server Error";
+        let statusCode = 500;
+        
+        if (error.type) {
+            // This is a Stripe error
+            console.error('Stripe error type:', error.type);
+            
+            switch (error.type) {
+                case 'StripeCardError':
+                    // Card was declined
+                    errorMessage = error.message || 'Your card was declined';
+                    statusCode = 400;
+                    break;
+                case 'StripeInvalidRequestError':
+                    // Invalid parameters were supplied to Stripe's API
+                    errorMessage = error.message || 'Invalid payment information';
+                    statusCode = 400;
+                    break;
+                case 'StripeAPIError':
+                    // An error occurred internally with Stripe's API
+                    errorMessage = 'Payment processing error';
+                    statusCode = 500;
+                    break;
+                case 'StripeConnectionError':
+                    // Some kind of error occurred during the HTTPS communication
+                    errorMessage = 'Payment service connection error';
+                    statusCode = 503;
+                    break;
+                case 'StripeAuthenticationError':
+                    // Authentication with Stripe's API failed
+                    errorMessage = 'Payment service authentication error';
+                    statusCode = 500;
+                    break;
+                case 'StripeRateLimitError':
+                    // Too many requests made to the API too quickly
+                    errorMessage = 'Payment service temporarily unavailable';
+                    statusCode = 429;
+                    break;
+                default:
+                    errorMessage = error.message || 'Payment processing error';
+                    statusCode = 500;
+            }
+        }
+        
+        res.status(statusCode).json({ 
+            message: errorMessage,
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
