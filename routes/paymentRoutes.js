@@ -21,9 +21,17 @@ router.post('/webhook', express.raw({type: 'application/json'}), handleStripeWeb
 // Add a route to verify webhook configuration
 router.get('/webhook-status', (req, res) => {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const serverConfig = {
+        raw_body_parser: true, // Assuming express.raw middleware is correctly configured
+        body_parser_skipped: true // Assuming body-parser is skipped for webhook route
+    };
+    
     res.json({
-        webhook_configured: !!webhookSecret,
-        webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`
+        webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`,
+        webhook_secret_status: webhookSecret ? 'configured' : 'not configured',
+        server_configuration: serverConfig,
+        status: webhookSecret ? 'ready' : 'missing webhook secret',
+        documentation: '/STRIPE_WEBHOOK_SETUP.md'
     });
 });
 
