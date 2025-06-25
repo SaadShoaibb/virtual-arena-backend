@@ -15,7 +15,16 @@ const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+
+// Special handling for Stripe webhooks - needs raw body for signature verification
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/v1/payment/webhook') {
+        next(); // Skip body parsing for webhook route
+    } else {
+        express.json()(req, res, next); // Parse JSON for all other routes
+    }
+});
+
 app.use(morgan('dev'));
 
 // Basic route

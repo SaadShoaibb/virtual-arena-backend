@@ -220,6 +220,24 @@ const createTables = async () => {
                 FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
             );`
         )
+        
+        // Add item_type column to OrderItems if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM OrderItems LIKE 'item_type';
+            `);
+            
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE OrderItems
+                    ADD COLUMN item_type ENUM('product', 'tournament') DEFAULT 'product';
+                `);
+                console.log('item_type column added to OrderItems successfully');
+            }
+        } catch (error) {
+            console.log('Error adding item_type column to OrderItems:', error.message);
+        }
 
         // CheckoutPayment
         await db.query(`
