@@ -62,11 +62,18 @@ The following webhook events are configured for Virtual Arena:
 
 3. **Verify Webhook Configuration**
 
-   - Visit `https://your-domain.com/api/v1/payment/webhook-status` to verify your webhook configuration
-   - The response should indicate that the webhook is properly configured with the following information:
-     - Webhook URL
-     - Webhook secret status (configured or not configured)
-     - Server configuration status
+   You can verify your webhook configuration using either of these endpoints:
+   
+   - Standard endpoint: `https://your-domain.com/api/v1/payment/webhook-status`
+   - Direct endpoint: `https://your-domain.com/webhook-status` (easier to access)
+   
+   The response will include:
+   - Webhook URL
+   - Webhook secret status (configured or not configured)
+   - Server configuration status
+   - Overall status (ready or missing webhook secret)
+   
+   If you're having trouble accessing the standard endpoint, try the direct endpoint which bypasses some middleware.
 
 ### Local Development Setup
 
@@ -236,9 +243,28 @@ exports.stripeWebhook = async (req, res) => {
    - View recent webhook attempts and their status
    - Check for any delivery errors or response codes
 
-3. **Use the Webhook Status Endpoint**
+3. **Use the Webhook Status Endpoints**
 
-   Visit `/api/v1/payment/webhook-status` to verify your webhook configuration is correct.
+   There are two webhook status endpoints available:
+   
+   - Standard endpoint: `/api/v1/payment/webhook-status`
+   - Direct endpoint: `/webhook-status` (bypasses some middleware)
+   
+   If you're having trouble accessing the standard endpoint, try the direct endpoint. The response from either endpoint will help you verify that your webhook configuration is correct.
+   
+   Example response:
+   ```json
+   {
+     "webhook_url": "https://your-domain.com/api/v1/payment/webhook",
+     "webhook_secret_status": "configured",
+     "server_configuration": {
+       "raw_body_parser": true,
+       "body_parser_skipped": true
+     },
+     "status": "ready",
+     "documentation": "/STRIPE_WEBHOOK_SETUP.md"
+   }
+   ```
 
 4. **Test with Stripe CLI**
 

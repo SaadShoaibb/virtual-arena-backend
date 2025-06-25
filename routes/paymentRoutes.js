@@ -26,6 +26,13 @@ router.get('/webhook-status', (req, res) => {
         body_parser_skipped: true // Assuming body-parser is skipped for webhook route
     };
     
+    // Log the request for debugging
+    console.log('Webhook status request received');
+    console.log('Request URL:', req.originalUrl);
+    console.log('Request path:', req.path);
+    console.log('Request protocol:', req.protocol);
+    console.log('Request host:', req.get('host'));
+    
     res.json({
         webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`,
         webhook_secret_status: webhookSecret ? 'configured' : 'not configured',

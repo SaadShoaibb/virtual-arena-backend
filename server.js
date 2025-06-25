@@ -51,6 +51,19 @@ app.get('/', (req, res) => {
         .send("<h1>Virtual Arena Backend is working correctly</h1>");
 });
 
+// Direct webhook status route for easier access and debugging
+app.get('/webhook-status', (req, res) => {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    console.log('Direct webhook status route accessed');
+    
+    res.json({
+        webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`,
+        webhook_secret_status: webhookSecret ? 'configured' : 'not configured',
+        status: webhookSecret ? 'ready' : 'missing webhook secret',
+        note: 'This is a direct route. The standard route is at /api/v1/payment/webhook-status'
+    });
+});
+
 // API Routes
 app.use('/api/v1/auth', require("./routes/authRoutes"));
 app.use('/api/v1/admin', require("./routes/adminRoutes"));
