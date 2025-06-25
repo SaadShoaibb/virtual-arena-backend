@@ -5,7 +5,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // Use Stripe s
 // Create a Stripe Payment Intent
 const createPaymentIntent = async (req, res) => {
     try {
-        const { user_id, entity_type, entity_id, amount } = req.body;
+        const { user_id, entity_type, entity_id, amount, connected_account_id } = req.body;
 
         // Validate input
         if (!user_id || !entity_type || !entity_id || !amount) {
@@ -29,8 +29,8 @@ const createPaymentIntent = async (req, res) => {
             // Continue with default values if user details can't be fetched
         }
 
-        // Create a Stripe Payment Intent with enhanced metadata
-        const paymentIntent = await stripe.paymentIntents.create({
+        // Create payment intent options
+        const paymentIntentOptions = {
             amount: Math.round(amount * 100), // Convert to cents and ensure it's an integer
             currency: 'usd',
             metadata: { 
@@ -38,16 +38,31 @@ const createPaymentIntent = async (req, res) => {
                 entity_type, 
                 entity_id,
                 user_email: userEmail,
-                user_name: userName
+                user_name: userName,
+                connected_account_id: connected_account_id || null
             },
             receipt_email: userEmail, // Send receipt email
             description: `Payment for ${entity_type} #${entity_id}`,
-        });
+        };
+        
+        // If connected account is provided, add application fee and transfer data
+        if (connected_account_id) {
+            // Calculate application fee amount (e.g., 10% of the total)
+            const applicationFeeAmount = Math.round(amount * 100 * 0.1); // 10% fee in cents
+            
+            paymentIntentOptions.application_fee_amount = applicationFeeAmount;
+            paymentIntentOptions.transfer_data = {
+                destination: connected_account_id,
+            };
+        }
+        
+        // Create a Stripe Payment Intent with enhanced metadata
+        const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
 
         // Save the payment intent to the database
         await db.query(
-            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
-            [user_id, entity_type, entity_id, paymentIntent.id, amount, 'usd']
+            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, amount, currency, status, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+            [user_id, entity_type, entity_id, paymentIntent.id, amount, 'usd', connected_account_id || null]
         );
 
         // Return the client secret to the frontend
@@ -153,7 +168,7 @@ const getPaymentDetails = async (req, res) => {
 // Create a Stripe Checkout Session
 const createCheckoutSession = async (req, res) => {
     try {
-        const { user_id, entity_type, entity_id, amount } = req.body;
+        const { user_id, entity_type, entity_id, amount, connected_account_id } = req.body;
 
         // Validate input
         if (!user_id || !entity_type || !entity_id || !amount) {
@@ -218,8 +233,8 @@ const createCheckoutSession = async (req, res) => {
             ];
         }
 
-        // Create a checkout session
-        const session = await stripe.checkout.sessions.create({
+        // Create checkout session options
+        const sessionOptions = {
             payment_method_types: ['card'],
             line_items: lineItems,
             mode: 'payment',
@@ -230,14 +245,31 @@ const createCheckoutSession = async (req, res) => {
                 user_id,
                 entity_id,
                 entity_type,
-                user_name: userName
-            },
-        });
+                user_name: userName,
+                connected_account_id: connected_account_id || null
+            }
+        };
+        
+        // If connected account is provided, add application fee and transfer data
+        if (connected_account_id) {
+            // Calculate application fee amount (e.g., 10% of the total)
+            const applicationFeeAmount = Math.round(amount * 100 * 0.1); // 10% fee in cents
+            
+            sessionOptions.payment_intent_data = {
+                application_fee_amount: applicationFeeAmount,
+                transfer_data: {
+                    destination: connected_account_id,
+                },
+            };
+        }
+        
+        // Create a checkout session
+        const session = await stripe.checkout.sessions.create(sessionOptions);
 
         // Save the checkout session to the database
         await db.query(
-            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, checkout_session_id, amount, currency, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
-            [user_id, entity_type, entity_id, null, session.id, amount, 'usd']
+            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, checkout_session_id, amount, currency, status, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            [user_id, entity_type, entity_id, null, session.id, amount, 'usd', connected_account_id || null]
         );
 
         res.status(200).json({
