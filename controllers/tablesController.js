@@ -116,7 +116,7 @@ const createTables = async () => {
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE TournamentRegistrations
-                    ADD COLUMN payment_status ENUM('pending', 'paid') DEFAULT 'pending';
+                    ADD COLUMN IF NOT EXISTS payment_status ENUM('pending', 'paid') DEFAULT 'pending';
                 `);
                 console.log('payment_status column added successfully');
             }
@@ -134,7 +134,7 @@ const createTables = async () => {
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE TournamentRegistrations
-                    ADD COLUMN payment_option ENUM('online', 'at_event') DEFAULT 'online';
+                    ADD COLUMN IF NOT EXISTS payment_option ENUM('online', 'at_event') DEFAULT 'online';
                 `);
                 console.log('payment_option column added successfully');
             }
@@ -232,7 +232,7 @@ const createTables = async () => {
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE OrderItems
-                    ADD COLUMN item_type ENUM('product', 'tournament') DEFAULT 'product';
+                    ADD COLUMN IF NOT EXISTS item_type ENUM('product', 'tournament') DEFAULT 'product';
                 `);
                 console.log('item_type column added to OrderItems successfully');
             }
@@ -255,7 +255,7 @@ const createTables = async () => {
         try {
             const [columns] = await db.query(`SHOW COLUMNS FROM Payments LIKE 'checkout_session_id';`);
             if (columns.length === 0) {
-                await db.query(`ALTER TABLE Payments ADD COLUMN checkout_session_id VARCHAR(255) NULL AFTER payment_intent_id;`);
+                await db.query(`ALTER TABLE Payments ADD COLUMN IF NOT EXISTS checkout_session_id VARCHAR(255) NULL AFTER payment_intent_id;`);
                 console.log('Added checkout_session_id column to Payments');
             }
         } catch (err) {
@@ -369,7 +369,7 @@ const createTables = async () => {
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE Cart
-                    ADD COLUMN payment_option ENUM('online', 'at_event') DEFAULT 'online';
+                    ADD COLUMN IF NOT EXISTS payment_option ENUM('online', 'at_event') DEFAULT 'online';
                 `);
                 console.log('payment_option column added to Cart successfully');
             }
@@ -439,7 +439,10 @@ const createTables = async () => {
                 // Check if the table has a 'created_at' column
                 const [columns] = await db.query(`SHOW COLUMNS FROM ${table} LIKE 'created_at'`);
                 if (columns.length > 0) {
-                    await db.query(`CREATE INDEX idx_${table}_created_at ON ${table}(created_at)`);
+                    const [indexes] = await db.query(`SHOW INDEX FROM ${table} WHERE Key_name = 'idx_${table}_created_at'`);
+                    if (indexes.length === 0) {
+                        await db.query(`CREATE INDEX idx_${table}_created_at ON ${table}(created_at)`);
+                    }
                 }
             } catch (err) {
                 // Ignore errors if index already exists
