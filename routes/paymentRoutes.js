@@ -1,58 +1,33 @@
 const express = require('express');
 const router = express.Router();
 const isAuthenticated = require('../middlewares/authMiddleware');
-const { createPaymentIntent, confirmPayment, getPaymentDetails, createCheckoutSession } = require('../controllers/paymentController');
-const { handleStripeWebhook } = require('../controllers/webhookController');
-const isAdmin = require('../middlewares/adminMiddleware');
-
-// Import the connected accounts controller
-const connectedAccountsController = require('../controllers/connectedAccountsExample');
+const paymentController = require('../controllers/paymentController');
 
 // Stripe Payment Routes
-router.post('/create-payment-intent', isAuthenticated, createPaymentIntent);
-router.post('/create-checkout-session', isAuthenticated, createCheckoutSession);
-router.post('/confirm_payment', isAuthenticated, confirmPayment);
-router.get('/payment-details', isAuthenticated, isAdmin, getPaymentDetails);
 
-// Stripe Webhook - No authentication middleware as it's called by Stripe
-// The express.raw middleware is important to preserve the raw body for signature verification
-router.post('/webhook', express.raw({type: 'application/json'}), handleStripeWebhook);
+/**
+ * Checkout session route - requires authentication
+ * This ensures only authenticated users can create checkout sessions
+ */
+router.post('/create-checkout-session', paymentController.createCheckoutSession);
 
-// Add a route to verify webhook configuration
-router.get('/webhook-status', (req, res) => {
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    const serverConfig = {
-        raw_body_parser: true, // Assuming express.raw middleware is correctly configured
-        body_parser_skipped: true // Assuming body-parser is skipped for webhook route
-    };
-    
-    // Log the request for debugging
-    console.log('Webhook status request received');
-    console.log('Request URL:', req.originalUrl);
-    console.log('Request path:', req.path);
-    console.log('Request protocol:', req.protocol);
-    console.log('Request host:', req.get('host'));
-    
-    res.json({
-        webhook_url: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`,
-        webhook_secret_status: webhookSecret ? 'configured' : 'not configured',
-        server_configuration: serverConfig,
-        status: webhookSecret ? 'ready' : 'missing webhook secret',
-        documentation: '/STRIPE_WEBHOOK_SETUP.md'
-    });
+/**
+ * Confirm payment route - can be used by client after successful checkout
+ * This is used to update the payment status in the database
+ */
+router.post('/confirm-payment', isAuthenticated, paymentController.confirmPayment);
+
+/**
+ * Get payment details route - requires authentication
+ * This is used by the client to view payment details
+ */
+router.get('/payment-details/:paymentId', isAuthenticated, paymentController.getPaymentDetails);
+
+/**
+ * Test route to verify backend routing
+ */
+router.get('/test', (req, res) => {
+  res.json({ message: 'Payment routes working!' });
 });
-
-// Connected Accounts routes
-// Create a connected account
-router.post('/connected-accounts', connectedAccountsController.createConnectedAccount);
-
-// List connected accounts
-router.get('/connected-accounts', connectedAccountsController.listConnectedAccounts);
-
-// Create a checkout session for a connected account
-router.post('/connected-accounts/create-checkout-session', connectedAccountsController.createConnectedAccountCheckoutSession);
-
-// Create a payment intent for a connected account
-router.post('/connected-accounts/create-payment-intent', connectedAccountsController.createConnectedAccountPaymentIntent);
 
 module.exports = router;

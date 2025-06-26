@@ -2,348 +2,271 @@ require('dotenv').config(); // Load environment variables from .env
 const db = require('../config/db');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // Use Stripe secret key from .env
 
-// Create a Stripe Payment Intent
-const createPaymentIntent = async (req, res) => {
-    try {
-        const { user_id, entity_type, entity_id, amount, connected_account_id } = req.body;
-
-        // Validate input
-        if (!user_id || !entity_type || !entity_id || !amount) {
-            return res.status(400).json({ message: "Missing required fields" });
-        }
-
-        // Get user information for better metadata (if available)
-        let userEmail = 'customer@example.com';
-        let userName = 'Customer';
-        try {
-            const [userRows] = await db.query(
-                "SELECT email, username, full_name FROM Users WHERE user_id = ?",
-                [user_id]
-            );
-            if (userRows.length > 0) {
-                userEmail = userRows[0].email || userEmail;
-                userName = userRows[0].full_name || userRows[0].username || userName;
-            }
-        } catch (err) {
-            console.log('Could not fetch user details:', err);
-            // Continue with default values if user details can't be fetched
-        }
-
-        // Create payment intent options
-        const paymentIntentOptions = {
-            amount: Math.round(amount * 100), // Convert to cents and ensure it's an integer
-            currency: 'usd',
-            metadata: { 
-                user_id, 
-                entity_type, 
-                entity_id,
-                user_email: userEmail,
-                user_name: userName,
-                connected_account_id: connected_account_id || null
-            },
-            receipt_email: userEmail, // Send receipt email
-            description: `Payment for ${entity_type} #${entity_id}`,
-        };
-        
-        // If connected account is provided, add application fee and transfer data
-        if (connected_account_id) {
-            // Calculate application fee amount (e.g., 10% of the total)
-            const applicationFeeAmount = Math.round(amount * 100 * 0.1); // 10% fee in cents
-            
-            paymentIntentOptions.application_fee_amount = applicationFeeAmount;
-            paymentIntentOptions.transfer_data = {
-                destination: connected_account_id,
-            };
-        }
-        
-        // Create a Stripe Payment Intent with enhanced metadata
-        const paymentIntent = await stripe.paymentIntents.create(paymentIntentOptions);
-
-        // Save the payment intent to the database
-        await db.query(
-            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, amount, currency, status, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-            [user_id, entity_type, entity_id, paymentIntent.id, amount, 'usd', connected_account_id || null]
-        );
-
-        // Return the client secret to the frontend
-        res.status(200).json({ 
-            clientSecret: paymentIntent.client_secret,
-            paymentIntentId: paymentIntent.id
-        });
-    } catch (error) {
-        console.error('Error creating payment intent:', error);
-        res.status(500).json({ message: "Internal Server Error" });
-    }
-};
-
-// Confirm Payment (Dummy Data)
-const confirmPayment = async (req, res) => {
-    try {
-        const { payment_intent_id, entity_type, entity_id, user_id } = req.body;
-
-        // Simulate payment success (for testing)
-        await db.query(
-            "UPDATE Payments SET status = 'succeeded' WHERE payment_intent_id = ?",
-            [payment_intent_id]
-        );
-
-        // Handle entity-specific logic (dummy data for testing)
-        switch (entity_type) {
-            case 'gift_card':
-                await db.query(
-                    "INSERT INTO UserGiftCards (user_id, gift_card_id, remaining_balance) VALUES (?, ?, ?)",
-                    [user_id, entity_id, 100] // Dummy balance
-                );
-                break;
-
-            case 'order':
-                await db.query(
-                    "UPDATE Orders SET status = 'paid' WHERE order_id = ?",
-                    [entity_id]
-                );
-                break;
-
-            case 'booking':
-                await db.query(
-                    "UPDATE Bookings SET status = 'confirmed' WHERE booking_id = ?",
-                    [entity_id]
-                );
-                break;
-
-            case 'ticket':
-                await db.query(
-                    "INSERT INTO UserTickets (user_id, ticket_id) VALUES (?, ?)",
-                    [user_id, entity_id]
-                );
-                break;
-
-            default:
-                console.warn(`Unhandled entity type: ${entity_type}`);
-        }
-
-        res.status(200).json({ message: "Payment confirmed successfully" });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Internal Server Error" });
-    }
-};
-
-// Get Payment Details
-// Get All Payment Details (Admin)
-const getPaymentDetails = async (req, res) => {
-    try {
-        // Fetch all payments from the database
-        const [payments] = await db.query(`
-            SELECT * FROM Payments
-        `);
-
-        if (!payments.length) {
-            return res.status(404).json({ message: "No payments found" });
-        }
-
-        // Fetch additional details from Stripe for each payment
-        const paymentDetails = await Promise.all(
-            payments.map(async (payment) => {
-                const stripePayment = await stripe.paymentIntents.retrieve(payment.payment_intent_id);
-                return {
-                    ...payment,
-                    stripe_payment_status: stripePayment.status,
-                    stripe_payment_amount: stripePayment.amount / 100, // Convert back to dollars
-                    stripe_payment_currency: stripePayment.currency,
-                };
-            })
-        );
-
-        res.status(200).json({
-            success: true,
-            message: "All payment details retrieved successfully",
-            payments: paymentDetails,
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Internal Server Error" });
-    }
-};
-
-// Create a Stripe Checkout Session
+/**
+ * Create a Stripe Checkout Session
+ * This is the main payment method for Virtual Arena
+ * It creates a checkout session and returns the session ID to the client
+ */
 const createCheckoutSession = async (req, res) => {
-    try {
-        const { user_id, entity_type, entity_id, amount, connected_account_id } = req.body;
-
-        // Validate input
-        if (!user_id || !entity_type || !entity_id || !amount) {
-            return res.status(400).json({ message: "Missing required fields" });
-        }
-
-        // Get user information
-        let userEmail = 'customer@example.com';
-        let userName = 'Customer';
-        try {
-            const [userRows] = await db.query(
-                "SELECT email, username, full_name FROM Users WHERE user_id = ?",
-                [user_id]
-            );
-            if (userRows.length > 0) {
-                userEmail = userRows[0].email || userEmail;
-                userName = userRows[0].full_name || userRows[0].username || userName;
-            }
-        } catch (err) {
-            console.log('Could not fetch user details:', err);
-            // Continue with default values if user details can't be fetched
-        }
-
-        // Create line items based on entity type
-        let lineItems = [];
-        
-        if (entity_type === 'order') {
-            // For orders, get cart items
-            const [cartItems] = await db.query(
-                'SELECT ci.*, p.name, p.price FROM CartItems ci JOIN Products p ON ci.product_id = p.id WHERE ci.user_id = ?',
-                [user_id]
-            );
-            
-            if (!cartItems || cartItems.length === 0) {
-                return res.status(400).json({ message: 'No items in cart' });
-            }
-            
-            // Create line items for each product
-            lineItems = cartItems.map(item => ({
-                price_data: {
-                    currency: 'usd',
-                    product_data: {
-                        name: item.name,
-                    },
-                    unit_amount: Math.round(item.price * 100), // Convert to cents
-                },
-                quantity: item.quantity,
-            }));
-        } else {
-            // For other entity types, create a single line item
-            lineItems = [
-                {
-                    price_data: {
-                        currency: 'usd',
-                        product_data: {
-                            name: `Payment for ${entity_type} #${entity_id}`,
-                        },
-                        unit_amount: Math.round(amount * 100), // Convert to cents
-                    },
-                    quantity: 1,
-                },
-            ];
-        }
-
-        // Create checkout session options
-        const sessionOptions = {
-            payment_method_types: ['card'],
-            line_items: lineItems,
-            mode: 'payment',
-            success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/checkout?canceled=true`,
-            customer_email: userEmail,
-            metadata: {
-                user_id,
-                entity_id,
-                entity_type,
-                user_name: userName,
-                connected_account_id: connected_account_id || null,
-                created_at: new Date().toISOString()
-            },
-            // Ensure we get a payment_intent object with the checkout session
-            payment_intent_data: {
-                metadata: {
-                    user_id,
-                    entity_id,
-                    entity_type,
-                    user_name: userName,
-                    connected_account_id: connected_account_id || null
-                }
-            }
-        };
-        
-        // If connected account is provided, add application fee and transfer data
-        if (connected_account_id) {
-            // Calculate application fee amount (e.g., 10% of the total)
-            const applicationFeeAmount = Math.round(amount * 100 * 0.1); // 10% fee in cents
-            
-            sessionOptions.payment_intent_data = {
-                application_fee_amount: applicationFeeAmount,
-                transfer_data: {
-                    destination: connected_account_id,
-                },
-            };
-        }
-        
-        // Create a checkout session
-        const session = await stripe.checkout.sessions.create(sessionOptions);
-
-        // Save the checkout session to the database
-        await db.query(
-            "INSERT INTO Payments (user_id, entity_type, entity_id, payment_intent_id, checkout_session_id, amount, currency, status, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-            [user_id, entity_type, entity_id, null, session.id, amount, 'usd', connected_account_id || null]
-        );
-
-        res.status(200).json({
-            sessionId: session.id
-        });
-    } catch (error) {
-        console.error('Error creating checkout session:', error);
-        
-        // Provide more detailed error information
-        let errorMessage = "Internal Server Error";
-        let statusCode = 500;
-        
-        if (error.type) {
-            // This is a Stripe error
-            console.error('Stripe error type:', error.type);
-            
-            switch (error.type) {
-                case 'StripeCardError':
-                    // Card was declined
-                    errorMessage = error.message || 'Your card was declined';
-                    statusCode = 400;
-                    break;
-                case 'StripeInvalidRequestError':
-                    // Invalid parameters were supplied to Stripe's API
-                    errorMessage = error.message || 'Invalid payment information';
-                    statusCode = 400;
-                    break;
-                case 'StripeAPIError':
-                    // An error occurred internally with Stripe's API
-                    errorMessage = 'Payment processing error';
-                    statusCode = 500;
-                    break;
-                case 'StripeConnectionError':
-                    // Some kind of error occurred during the HTTPS communication
-                    errorMessage = 'Payment service connection error';
-                    statusCode = 503;
-                    break;
-                case 'StripeAuthenticationError':
-                    // Authentication with Stripe's API failed
-                    errorMessage = 'Payment service authentication error';
-                    statusCode = 500;
-                    break;
-                case 'StripeRateLimitError':
-                    // Too many requests made to the API too quickly
-                    errorMessage = 'Payment service temporarily unavailable';
-                    statusCode = 429;
-                    break;
-                default:
-                    errorMessage = error.message || 'Payment processing error';
-                    statusCode = 500;
-            }
-        }
-        
-        res.status(statusCode).json({ 
-            message: errorMessage,
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
+  try {
+    console.log('Received checkout session request:', req.body);
+    const { user_id, amount, connected_account_id, entity_type, entity_id } = req.body;
+    
+    // Validate required fields
+    if (!user_id || !amount) {
+      console.log('Missing required fields:', { user_id, amount });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: user_id and amount are required' 
+      });
     }
+
+    // Validate amount is a number and at least 0.50
+    if (typeof amount !== 'number' || amount < 0.50) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount must be a number and at least 0.50 USD'
+      });
+    }
+
+    // Check that FRONTEND_URL is set
+    if (!process.env.FRONTEND_URL) {
+      return res.status(500).json({
+        success: false,
+        message: 'FRONTEND_URL environment variable is not set'
+      });
+    }
+
+    // Get user info
+    const [userRows] = await db.query('SELECT * FROM Users WHERE user_id = ?', [user_id]);
+    if (userRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const user = userRows[0];
+    const userEmail = user.email;
+    const userName = user.username;
+
+    // Create a generic line item
+    const lineItems = [{
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: 'Generic Payment',
+          description: 'Virtual Arena Payment',
+        },
+        unit_amount: Math.round(amount * 100), // Convert to cents
+      },
+      quantity: 1,
+    }];
+
+    const successUrl = `${process.env.FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${process.env.FRONTEND_URL}/checkout/cancel`;
+
+    // Create Stripe checkout session parameters
+    const sessionParams = {
+      payment_method_types: ['card'],
+      line_items: lineItems,
+      mode: 'payment',
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      customer_email: userEmail,
+      metadata: {
+        user_id,
+        user_name: userName,
+      },
+    };
+
+    // Use connected account if specified
+    if (connected_account_id) {
+      sessionParams.payment_intent_data = {
+        application_fee_amount: Math.round(amount * 0.1 * 100), // 10% fee
+        transfer_data: {
+          destination: connected_account_id,
+        },
+      };
+    }
+
+    // Create Stripe checkout session
+    const session = await stripe.checkout.sessions.create(sessionParams);
+
+    // Create a payment record in the database
+    const [paymentResult] = await db.query(
+      'INSERT INTO Payments (user_id, entity_type, entity_id, amount, currency, checkout_session_id, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        user_id,
+        entity_type || 'generic',
+        entity_id || 0,
+        amount,
+        'usd', // default currency
+        session.id,
+        connected_account_id || null
+      ]
+    );
+
+    // Then, if there's an entity (booking, tournament, etc.), update it with payment_id
+    // For example, if we have a booking:
+    if (entity_type === 'booking') {
+      await db.query(
+        'UPDATE Bookings SET payment_id = ? WHERE booking_id = ?',
+        [paymentResult.insertId, entity_id]
+      );
+    }
+
+    // Similarly for tournament registration
+    if (entity_type === 'tournament') {
+      await db.query(
+        'UPDATE TournamentRegistrations SET payment_id = ? WHERE registration_id = ?',
+        [paymentResult.insertId, entity_id]
+      );
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      sessionId: session.id 
+    });
+  } catch (err) {
+    console.error('Error creating checkout session:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
+};
+
+/**
+ * Confirm a payment after successful checkout
+ * This is called by the client after a successful checkout
+ */
+const confirmPayment = async (req, res) => {
+  try {
+    const { session_id } = req.body;
+    
+    if (!session_id) {
+      return res.status(400).json({ success: false, message: 'Session ID is required' });
+    }
+    
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    
+    if (!session) {
+      return res.status(404).json({ success: false, message: 'Session not found' });
+    }
+    
+    // Check if payment was successful
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Payment not completed', 
+        status: session.payment_status 
+      });
+    }
+    
+    // Update payment status in database
+    await db.query(
+      'UPDATE Payments SET status = ? WHERE checkout_session_id = ?',
+      ['succeeded', session_id]
+    );
+
+    // Retrieve user_id linked to this payment and clear their cart
+    const [paymentRows] = await db.query(
+      'SELECT user_id FROM Payments WHERE checkout_session_id = ?',
+      [session_id]
+    );
+    if (paymentRows.length) {
+      const userId = paymentRows[0].user_id;
+      await db.query('DELETE FROM Cart WHERE user_id = ?', [userId]);
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Payment confirmed successfully',
+    });
+  } catch (error) {
+    console.error('Error confirming payment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm payment',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get payment details
+ * This is used by the admin dashboard to view payment details
+ */
+const getPaymentDetails = async (req, res) => {
+  try {
+    const { payment_id, checkout_session_id, payment_intent_id } = req.query;
+    
+    let query = 'SELECT * FROM Payments WHERE 1=1';
+    const params = [];
+    
+    if (payment_id) {
+      query += ' AND payment_id = ?';
+      params.push(payment_id);
+    }
+    
+    if (checkout_session_id) {
+      query += ' AND checkout_session_id = ?';
+      params.push(checkout_session_id);
+    }
+    
+    if (payment_intent_id) {
+      query += ' AND payment_intent_id = ?';
+      params.push(payment_intent_id);
+    }
+    
+    if (params.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one filter parameter is required' });
+    }
+    
+    const [paymentRows] = await db.query(query, params);
+    
+    if (paymentRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
+    }
+    
+    const payment = paymentRows[0];
+    
+    // If payment has a checkout session ID, get additional details from Stripe
+    if (payment.checkout_session_id) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(payment.checkout_session_id);
+        payment.stripe_details = session;
+      } catch (stripeError) {
+        console.error('Error retrieving Stripe session:', stripeError);
+        payment.stripe_error = 'Could not retrieve Stripe session details';
+      }
+    }
+    
+    // If payment has a payment intent ID, get additional details from Stripe
+    if (payment.payment_intent_id) {
+      try {
+        const paymentIntent = await stripe.paymentIntents.retrieve(payment.payment_intent_id);
+        payment.stripe_details = paymentIntent;
+      } catch (stripeError) {
+        console.error('Error retrieving Stripe payment intent:', stripeError);
+        payment.stripe_error = 'Could not retrieve Stripe payment intent details';
+      }
+    }
+    
+    res.status(200).json({
+      success: true,
+      payment
+    });
+  } catch (error) {
+    console.error('Error getting payment details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment details',
+      error: error.message
+    });
+  }
 };
 
 module.exports = {
-    createPaymentIntent,
-    confirmPayment,
-    getPaymentDetails,
-    createCheckoutSession
+  createCheckoutSession,
+  confirmPayment,
+  getPaymentDetails
 };

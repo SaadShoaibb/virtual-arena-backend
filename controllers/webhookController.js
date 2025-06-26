@@ -1,688 +1,428 @@
 require('dotenv').config();
-const db = require('../config/db');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const db = require('../config/db');
 
 /**
- * Stripe Webhook Handler
- * Processes Stripe webhook events, particularly for successful checkout sessions
+ * Handle Stripe webhook events
+ * This controller processes incoming webhook events from Stripe
+ * It verifies the webhook signature and updates the payment status in the database
  */
-const handleStripeWebhook = async (req, res) => {
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    
-    // Get the signature from the headers
-    const signature = req.headers['stripe-signature'];
-    const payload = req.rawBody || req.body;
-    
-    if (!signature) {
-        console.error('No Stripe signature found in webhook request');
-        return res.status(400).json({ success: false, message: 'No signature found' });
+const handleWebhook = async (req, res) => {
+  const payload = req.body;
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+
+  try {
+    // Verify the webhook signature
+    event = stripe.webhooks.constructEvent(payload, sig, webhookSecret);
+  } catch (err) {
+    console.error(`Webhook signature verification failed: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Log the event type for debugging
+  console.log('Webhook received:', event.type);
+
+  try {
+    // Handle different event types
+    switch (event.type) {
+      case 'checkout.session.completed':
+        await handleCheckoutSessionCompleted(event.data.object);
+        break;
+      case 'checkout.session.expired':
+        await handleExpiredCheckoutSession(event.data.object);
+        break;
+      case 'checkout.session.async_payment_failed':
+        await handleFailedCheckoutSession(event.data.object);
+        break;
+      case 'checkout.session.async_payment_succeeded':
+        await handleSucceededCheckoutSession(event.data.object);
+        break;
+      case 'payment_intent.succeeded':
+        await handleSuccessfulPaymentIntent(event.data.object);
+        break;
+      case 'payment_intent.payment_failed':
+        await handleFailedPaymentIntent(event.data.object);
+        break;
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
     }
-    
-    if (!payload) {
-        console.error('No request body found in webhook request');
-        return res.status(400).json({ success: false, message: 'No request body found' });
-    }
-    
-    console.log('Webhook signature:', signature);
-    console.log('Webhook secret available:', !!webhookSecret);
-    
-    let event;
-    
-    try {
-        // Verify the event came from Stripe
-        event = stripe.webhooks.constructEvent(
-            payload,
-            signature,
-            webhookSecret
-        );
-        
-        // Log the event for debugging
-        console.log(`Webhook received: ${event.type}`);
-        console.log(`Event ID: ${event.id}`);
-        
-        // Check if this is a connected account event
-        const connectedAccountId = event.account;
-        if (connectedAccountId) {
-            console.log(`Event from connected account: ${connectedAccountId}`);
-            
-            // Log the connected account event to the database
-            try {
-                await db.query(
-                    "INSERT INTO ConnectedAccountWebhookEvents (connected_account_id, event_id, event_type, event_data, processed) VALUES (?, ?, ?, ?, ?)",
-                    [connectedAccountId, event.id, event.type, JSON.stringify(event.data), false]
-                );
-            } catch (err) {
-                console.error('Error logging connected account event:', err);
-                // Continue processing the event even if logging fails
-            }
-        }
-    } catch (err) {
-        console.error('Webhook signature verification failed:', err.message);
-        return res.status(400).json({ success: false, message: 'Invalid signature' });
-    }
-    
-    // Handle the event
-    try {
-        switch (event.type) {
-            case 'payment_intent.succeeded':
-                const paymentIntent = event.data.object;
-                console.log('Processing payment_intent.succeeded:', paymentIntent.id);
-                await handleSuccessfulPayment(paymentIntent);
-                break;
-                
-            case 'checkout.session.completed':
-                const session = event.data.object;
-                console.log('Processing checkout.session.completed:', session.id);
-                await handleCheckoutSession(session);
-                break;
-                
-            case 'checkout.session.async_payment_succeeded':
-                const asyncSuccessSession = event.data.object;
-                console.log('Processing checkout.session.async_payment_succeeded:', asyncSuccessSession.id);
-                await handleCheckoutSession(asyncSuccessSession);
-                break;
-                
-            case 'checkout.session.async_payment_failed':
-                const asyncFailedSession = event.data.object;
-                console.log('Processing checkout.session.async_payment_failed:', asyncFailedSession.id);
-                await handleFailedCheckoutSession(asyncFailedSession);
-                break;
-                
-            case 'checkout.session.expired':
-                const expiredSession = event.data.object;
-                console.log('Processing checkout.session.expired:', expiredSession.id);
-                await handleExpiredCheckoutSession(expiredSession);
-                break;
-            
-            case 'payment_intent.payment_failed':
-                const failedPaymentIntent = event.data.object;
-                console.log('Processing payment_intent.payment_failed:', failedPaymentIntent.id);
-                await handleFailedPaymentIntent(failedPaymentIntent);
-                break;
-                
-            default:
-                console.log(`Unhandled event type: ${event.type}`);
-        }
-        
-        return res.status(200).json({ success: true, message: 'Webhook processed successfully' });
-    } catch (err) {
-        console.error('Error processing webhook:', err);
-        return res.status(500).json({ success: false, message: 'Error processing webhook' });
-    }
+
+    // Return a 200 response to acknowledge receipt of the event
+    res.status(200).json({ received: true });
+  } catch (error) {
+    console.error(`Error processing webhook (${event.type}):`, error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
 };
 
 /**
- * Handle successful payment intent
+ * Handle checkout.session.completed event
+ * This is triggered when a customer completes the checkout process
  */
-async function handleSuccessfulPayment(paymentIntent) {
-    console.log('Payment Intent Metadata:', JSON.stringify(paymentIntent.metadata, null, 2));
+async function handleCheckoutSessionCompleted(session) {
+  try {
+    console.log('Processing checkout.session.completed:', session.id);
     
-    const { user_id, entity_type, entity_id, connected_account_id } = paymentIntent.metadata || {};
+    // Extract metadata from the session
+    const { user_id, entity_id, entity_type } = session.metadata || {};
     
-    if (!user_id || !entity_type || !entity_id) {
-        console.error('Missing required metadata in payment intent:', paymentIntent.id);
-        return;
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in checkout session:', session.id);
+      return;
     }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'succeeded', 
+          checkout_session_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
     
-    // Update payment status in database
-    try {
-        await db.query(
-            "UPDATE Payments SET status = 'succeeded' WHERE payment_intent_id = ?",
-            [paymentIntent.id]
-        );
-        console.log(`Updated payment status for payment_intent_id: ${paymentIntent.id}`);
-    } catch (err) {
-        console.error('Error updating payment status:', err);
+    // Update entity status based on entity_type
+    switch (entity_type) {
+      case 'order':
+        await updateOrderStatus(entity_id, 'paid');
+        break;
+      case 'booking':
+        await updateBookingStatus(entity_id, 'confirmed');
+        break;
+      case 'tournament':
+        await updateTournamentRegistrationStatus(entity_id, 'paid');
+        break;
+      default:
+        console.log(`No specific handler for entity_type: ${entity_type}`);
     }
-    
-    // If this is a connected account payment, update the connected account balance
-    if (connected_account_id) {
-        try {
-            // Get the account balance from Stripe
-            const balance = await stripe.balance.retrieve({
-                stripeAccount: connected_account_id
-            });
-            
-            // Extract available and pending balances for USD
-            const availableBalance = balance.available.find(b => b.currency === 'usd')?.amount || 0;
-            const pendingBalance = balance.pending.find(b => b.currency === 'usd')?.amount || 0;
-            
-            // Update or insert the balance record
-            await db.query(
-                `INSERT INTO ConnectedAccountBalances (connected_account_id, available_balance, pending_balance, currency) 
-                 VALUES (?, ?, ?, 'usd') 
-                 ON DUPLICATE KEY UPDATE available_balance = ?, pending_balance = ?, last_updated = CURRENT_TIMESTAMP`,
-                [connected_account_id, availableBalance / 100, pendingBalance / 100, availableBalance / 100, pendingBalance / 100]
-            );
-            console.log(`Updated balance for connected account: ${connected_account_id}`);
-        } catch (err) {
-            console.error('Error updating connected account balance:', err);
-            // Continue processing the payment even if balance update fails
-        }
-    }
-    
-    // Handle entity-specific logic based on what was purchased
-    try {
-        switch (entity_type) {
-            case 'order':
-                await db.query(
-                    "UPDATE Orders SET payment_status = 'completed', status = 'processing' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated order status for order_id: ${entity_id}`);
-                break;
-                
-            case 'gift_card':
-                await db.query(
-                    "UPDATE UserGiftCards SET status = 'active' WHERE gift_card_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Activated gift card for gift_card_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            case 'booking':
-                await db.query(
-                    "UPDATE Bookings SET status = 'confirmed', payment_status = 'paid' WHERE booking_id = ?",
-                    [entity_id]
-                );
-                console.log(`Confirmed booking for booking_id: ${entity_id}`);
-                break;
-                
-            case 'tournament':
-                await db.query(
-                    "UPDATE TournamentRegistrations SET payment_status = 'paid', status = 'registered' WHERE tournament_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Registered user for tournament_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            case 'product':
-                await db.query(
-                    "UPDATE ProductOrders SET payment_status = 'completed', status = 'processing' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated product order status for order_id: ${entity_id}`);
-                break;
-                
-            case 'event':
-                await db.query(
-                    "UPDATE EventRegistrations SET payment_status = 'paid', status = 'confirmed' WHERE event_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Confirmed event registration for event_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            default:
-                console.log(`Unhandled entity type: ${entity_type}`);
-        }
-    } catch (err) {
-        console.error(`Error updating ${entity_type} with ID ${entity_id}:`, err);
-    }
+
+    console.log(`Payment for ${entity_type} ${entity_id} marked as succeeded`);
+  } catch (error) {
+    console.error('Error handling checkout.session.completed:', error);
+    throw error;
+  }
 }
 
 /**
- * Handle checkout session completed
- */
-async function handleCheckoutSession(session) {
-    console.log('Checkout Session Data:', JSON.stringify({
-        id: session.id,
-        payment_status: session.payment_status,
-        payment_intent: session.payment_intent,
-        metadata: session.metadata,
-        customer: session.customer,
-        customer_email: session.customer_email,
-        amount_total: session.amount_total
-    }, null, 2));
-    
-    // If you're using Checkout Sessions instead of Payment Intents directly
-    if (session.payment_status === 'paid') {
-        // Update the database with the checkout session information
-        try {
-            // First check if we have a record for this checkout session
-            const [paymentRecords] = await db.query(
-                "SELECT * FROM Payments WHERE checkout_session_id = ?",
-                [session.id]
-            );
-            
-            if (paymentRecords && paymentRecords.length > 0) {
-                // Update existing record
-                await db.query(
-                    "UPDATE Payments SET status = 'succeeded' WHERE checkout_session_id = ?",
-                    [session.id]
-                );
-                console.log(`Updated payment status for checkout_session_id: ${session.id}`);
-            } else {
-                console.log(`No payment record found for checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
-            }
-        } catch (err) {
-            console.error('Error updating payment status for checkout session:', err);
-        }
-        
-        // Check if there's a payment intent associated with this session
-        if (session.payment_intent) {
-            try {
-                const paymentIntentId = session.payment_intent;
-                console.log(`Retrieving payment intent: ${paymentIntentId}`);
-                
-                // Get the payment intent to access its metadata
-                const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-                
-                // Process the successful payment using payment intent metadata
-                await handleSuccessfulPayment(paymentIntent);
-            } catch (err) {
-                console.error('Error retrieving or processing payment intent:', err);
-            }
-        } else {
-            // If no payment intent, use the metadata from the session directly
-            console.log('No payment intent found, using session metadata directly');
-            const { user_id, entity_type, entity_id, connected_account_id } = session.metadata || {};
-            
-            if (!user_id || !entity_type || !entity_id) {
-                console.error('Missing required metadata in checkout session:', session.id);
-                return;
-            }
-            
-            // If this is a connected account payment, update the connected account balance
-            if (connected_account_id) {
-                try {
-                    // Get the account balance from Stripe
-                    const balance = await stripe.balance.retrieve({
-                        stripeAccount: connected_account_id
-                    });
-                    
-                    // Extract available and pending balances for USD
-                    const availableBalance = balance.available.find(b => b.currency === 'usd')?.amount || 0;
-                    const pendingBalance = balance.pending.find(b => b.currency === 'usd')?.amount || 0;
-                    
-                    // Update or insert the balance record
-                    await db.query(
-                        `INSERT INTO ConnectedAccountBalances (connected_account_id, available_balance, pending_balance, currency) 
-                         VALUES (?, ?, ?, 'usd') 
-                         ON DUPLICATE KEY UPDATE available_balance = ?, pending_balance = ?, last_updated = CURRENT_TIMESTAMP`,
-                        [connected_account_id, availableBalance / 100, pendingBalance / 100, availableBalance / 100, pendingBalance / 100]
-                    );
-                    console.log(`Updated balance for connected account: ${connected_account_id}`);
-                } catch (err) {
-                    console.error('Error updating connected account balance:', err);
-                    // Continue processing the payment even if balance update fails
-                }
-            }
-            
-            // Handle entity-specific logic based on what was purchased
-            try {
-                switch (entity_type) {
-                    case 'order':
-                        await db.query(
-                            "UPDATE Orders SET payment_status = 'completed', status = 'processing' WHERE order_id = ?",
-                            [entity_id]
-                        );
-                        console.log(`Updated order status for order_id: ${entity_id}`);
-                        break;
-                        
-                    case 'gift_card':
-                        await db.query(
-                            "UPDATE UserGiftCards SET status = 'active' WHERE gift_card_id = ? AND user_id = ?",
-                            [entity_id, user_id]
-                        );
-                        console.log(`Activated gift card for gift_card_id: ${entity_id}, user_id: ${user_id}`);
-                        break;
-                        
-                    case 'booking':
-                        await db.query(
-                            "UPDATE Bookings SET status = 'confirmed', payment_status = 'paid' WHERE booking_id = ?",
-                            [entity_id]
-                        );
-                        console.log(`Confirmed booking for booking_id: ${entity_id}`);
-                        break;
-                        
-                    case 'tournament':
-                        await db.query(
-                            "UPDATE TournamentRegistrations SET payment_status = 'paid', status = 'registered' WHERE tournament_id = ? AND user_id = ?",
-                            [entity_id, user_id]
-                        );
-                        console.log(`Registered user for tournament_id: ${entity_id}, user_id: ${user_id}`);
-                        break;
-                        
-                    case 'product':
-                        await db.query(
-                            "UPDATE ProductOrders SET payment_status = 'completed', status = 'processing' WHERE order_id = ?",
-                            [entity_id]
-                        );
-                        console.log(`Updated product order status for order_id: ${entity_id}`);
-                        break;
-                        
-                    case 'event':
-                        await db.query(
-                            "UPDATE EventRegistrations SET payment_status = 'paid', status = 'confirmed' WHERE event_id = ? AND user_id = ?",
-                            [entity_id, user_id]
-                        );
-                        console.log(`Confirmed event registration for event_id: ${entity_id}, user_id: ${user_id}`);
-                        break;
-                        
-                    default:
-                        console.log(`Unhandled entity type: ${entity_type}`);
-                }
-            } catch (err) {
-                console.error(`Error updating ${entity_type} with ID ${entity_id}:`, err);
-            }
-        }
-    } else {
-        console.log(`Checkout session ${session.id} not paid, current status: ${session.payment_status}`);
-    }
-}
-
-/**
- * Handle failed checkout session
- */
-async function handleFailedCheckoutSession(session) {
-    console.log('Failed Checkout Session Data:', JSON.stringify({
-        id: session.id,
-        payment_status: session.payment_status,
-        metadata: session.metadata,
-        payment_intent: session.payment_intent,
-        customer: session.customer,
-        customer_email: session.customer_email,
-        amount_total: session.amount_total,
-        failure_message: session.last_payment_error?.message
-    }, null, 2));
-    
-    // Update the payment status in the database
-    try {
-        // First check if we have a record for this checkout session
-        const [paymentRecords] = await db.query(
-            "SELECT * FROM Payments WHERE checkout_session_id = ?",
-            [session.id]
-        );
-        
-        if (paymentRecords && paymentRecords.length > 0) {
-            // Update existing record
-            await db.query(
-                "UPDATE Payments SET status = 'failed', error_message = ? WHERE checkout_session_id = ?",
-                [session.last_payment_error?.message || 'Payment failed', session.id]
-            );
-            console.log(`Updated payment status to 'failed' for checkout_session_id: ${session.id}`);
-            
-            // Get user information for notification
-            const { user_id, entity_type, entity_id } = session.metadata || {};
-            if (user_id) {
-                // Here you could implement notification logic (email, SMS, etc.)
-                console.log(`Payment failed for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
-            }
-        } else {
-            console.log(`No payment record found for failed checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
-        }
-    } catch (err) {
-        console.error('Error updating payment status for failed checkout session:', err);
-    }
-    
-    // Get the metadata from the session
-    const { entity_type, entity_id, user_id } = session.metadata || {};
-    
-    if (!entity_type || !entity_id) {
-        console.error('Missing required metadata in failed checkout session:', session.id);
-        return;
-    }
-    
-    // Update the entity status based on the entity type
-    try {
-        switch (entity_type) {
-            case 'order':
-                await db.query(
-                    "UPDATE Orders SET payment_status = 'failed' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated order payment status to 'failed' for order_id: ${entity_id}`);
-                break;
-                
-            case 'booking':
-                await db.query(
-                    "UPDATE Bookings SET status = 'payment_failed', payment_status = 'failed' WHERE booking_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated booking status to 'payment_failed' for booking_id: ${entity_id}`);
-                break;
-                
-            case 'tournament':
-                await db.query(
-                    "UPDATE TournamentRegistrations SET payment_status = 'failed', status = 'payment_failed' WHERE tournament_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated tournament registration status to 'payment_failed' for tournament_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            case 'product':
-                await db.query(
-                    "UPDATE ProductOrders SET payment_status = 'failed', status = 'payment_failed' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated product order status to 'payment_failed' for order_id: ${entity_id}`);
-                break;
-                
-            case 'event':
-                await db.query(
-                    "UPDATE EventRegistrations SET payment_status = 'failed', status = 'payment_failed' WHERE event_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated event registration status to 'payment_failed' for event_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            default:
-                console.log(`Unhandled entity type in failed checkout: ${entity_type}`);
-        }
-    } catch (err) {
-        console.error(`Error updating ${entity_type} with ID ${entity_id} after payment failure:`, err);
-    }
-}
-
-/**
- * Handle expired checkout session
+ * Handle checkout.session.expired event
+ * This is triggered when a checkout session expires without being completed
  */
 async function handleExpiredCheckoutSession(session) {
-    console.log('Expired Checkout Session Data:', JSON.stringify({
-        id: session.id,
-        payment_status: session.payment_status,
-        metadata: session.metadata,
-        payment_intent: session.payment_intent,
-        customer: session.customer,
-        customer_email: session.customer_email,
-        amount_total: session.amount_total
-    }, null, 2));
+  try {
+    console.log('Processing checkout.session.expired:', session.id);
     
-    // Update the payment status in the database
-    try {
-        // First check if we have a record for this checkout session
-        const [paymentRecords] = await db.query(
-            "SELECT * FROM Payments WHERE checkout_session_id = ?",
-            [session.id]
-        );
-        
-        if (paymentRecords && paymentRecords.length > 0) {
-            // Update existing record
-            await db.query(
-                "UPDATE Payments SET status = 'expired' WHERE checkout_session_id = ?",
-                [session.id]
-            );
-            console.log(`Updated payment status to 'expired' for checkout_session_id: ${session.id}`);
-            
-            // Get user information for notification
-            const { user_id, entity_type, entity_id } = session.metadata || {};
-            if (user_id) {
-                // Here you could implement notification logic (email, SMS, etc.)
-                console.log(`Payment session expired for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
-            }
-        } else {
-            console.log(`No payment record found for expired checkout_session_id: ${session.id}. This might be a webhook test or an external checkout.`);
-        }
-    } catch (err) {
-        console.error('Error updating payment status for expired checkout session:', err);
+    // Extract metadata from the session
+    const { user_id, entity_id, entity_type } = session.metadata || {};
+    
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in checkout session:', session.id);
+      return;
     }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'expired', 
+          checkout_session_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
     
-    // Get the metadata from the session
-    const { entity_type, entity_id, user_id } = session.metadata || {};
-    
-    if (!entity_type || !entity_id) {
-        console.error('Missing required metadata in expired checkout session:', session.id);
-        return;
-    }
-    
-    // Update the entity status based on the entity type
-    try {
-        switch (entity_type) {
-            case 'order':
-                await db.query(
-                    "UPDATE Orders SET payment_status = 'expired' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated order payment status to 'expired' for order_id: ${entity_id}`);
-                break;
-                
-            case 'booking':
-                await db.query(
-                    "UPDATE Bookings SET status = 'payment_expired', payment_status = 'expired' WHERE booking_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated booking status to 'payment_expired' for booking_id: ${entity_id}`);
-                break;
-                
-            case 'tournament':
-                await db.query(
-                    "UPDATE TournamentRegistrations SET payment_status = 'expired', status = 'payment_expired' WHERE tournament_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated tournament registration status to 'payment_expired' for tournament_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            case 'product':
-                await db.query(
-                    "UPDATE ProductOrders SET payment_status = 'expired', status = 'payment_expired' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated product order status to 'payment_expired' for order_id: ${entity_id}`);
-                break;
-                
-            case 'event':
-                await db.query(
-                    "UPDATE EventRegistrations SET payment_status = 'expired', status = 'payment_expired' WHERE event_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated event registration status to 'payment_expired' for event_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            default:
-                console.log(`Unhandled entity type in expired checkout: ${entity_type}`);
-        }
-    } catch (err) {
-        console.error(`Error updating ${entity_type} with ID ${entity_id} after payment expiration:`, err);
-    }
+    console.log(`Payment for ${entity_type} ${entity_id} marked as expired`);
+  } catch (error) {
+    console.error('Error handling checkout.session.expired:', error);
+    throw error;
+  }
 }
 
 /**
- * Handle failed payment intent
+ * Handle checkout.session.async_payment_failed event
+ * This is triggered when an asynchronous payment fails
  */
-async function handleFailedPaymentIntent(paymentIntent) {
-    console.log('Failed Payment Intent Data:', JSON.stringify({
-        id: paymentIntent.id,
-        status: paymentIntent.status,
-        amount: paymentIntent.amount,
-        currency: paymentIntent.currency,
-        metadata: paymentIntent.metadata,
-        last_payment_error: paymentIntent.last_payment_error,
-        error_message: paymentIntent.last_payment_error?.message
-    }, null, 2));
+async function handleFailedCheckoutSession(session) {
+  try {
+    console.log('Processing checkout.session.async_payment_failed:', session.id);
     
-    // Extract error information
-    const errorMessage = paymentIntent.last_payment_error?.message || 'Payment failed';
-    const errorCode = paymentIntent.last_payment_error?.code || 'unknown';
+    // Extract metadata from the session
+    const { user_id, entity_id, entity_type } = session.metadata || {};
     
-    // Update the payment status in the database
-    try {
-        // First check if we have a record for this payment intent
-        const [paymentRecords] = await db.query(
-            "SELECT * FROM Payments WHERE payment_intent_id = ?",
-            [paymentIntent.id]
-        );
-        
-        if (paymentRecords && paymentRecords.length > 0) {
-            // Update existing record
-            await db.query(
-                "UPDATE Payments SET status = 'failed', error_message = ?, error_code = ? WHERE payment_intent_id = ?",
-                [errorMessage, errorCode, paymentIntent.id]
-            );
-            console.log(`Updated payment status to 'failed' for payment_intent_id: ${paymentIntent.id}`);
-            
-            // Get user information for notification
-            const { user_id, entity_type, entity_id } = paymentIntent.metadata || {};
-            if (user_id) {
-                // Here you could implement notification logic (email, SMS, etc.)
-                console.log(`Payment failed for user_id: ${user_id}, entity_type: ${entity_type}, entity_id: ${entity_id}`);
-                console.log(`Error message: ${errorMessage}`);
-            }
-        } else {
-            console.log(`No payment record found for failed payment_intent_id: ${paymentIntent.id}. This might be a webhook test or an external payment.`);
-        }
-    } catch (err) {
-        console.error('Error updating payment status for failed payment intent:', err);
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in checkout session:', session.id);
+      return;
     }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'failed', 
+          checkout_session_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
     
-    // Get the metadata from the payment intent
-    const { user_id, entity_type, entity_id } = paymentIntent.metadata || {};
-    
-    if (!user_id || !entity_type || !entity_id) {
-        console.error('Missing required metadata in failed payment intent:', paymentIntent.id);
-        return;
-    }
-    
-    // Update the entity status based on the entity type
-    try {
-        switch (entity_type) {
-            case 'order':
-                await db.query(
-                    "UPDATE Orders SET payment_status = 'failed' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated order payment status to 'failed' for order_id: ${entity_id}`);
-                break;
-                
-            case 'booking':
-                await db.query(
-                    "UPDATE Bookings SET status = 'payment_failed', payment_status = 'failed' WHERE booking_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated booking status to 'payment_failed' for booking_id: ${entity_id}`);
-                break;
-                
-            case 'tournament':
-                await db.query(
-                    "UPDATE TournamentRegistrations SET payment_status = 'failed', status = 'payment_failed' WHERE tournament_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated tournament registration status to 'payment_failed' for tournament_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            case 'product':
-                await db.query(
-                    "UPDATE ProductOrders SET payment_status = 'failed', status = 'payment_failed' WHERE order_id = ?",
-                    [entity_id]
-                );
-                console.log(`Updated product order status to 'payment_failed' for order_id: ${entity_id}`);
-                break;
-                
-            case 'event':
-                await db.query(
-                    "UPDATE EventRegistrations SET payment_status = 'failed', status = 'payment_failed' WHERE event_id = ? AND user_id = ?",
-                    [entity_id, user_id]
-                );
-                console.log(`Updated event registration status to 'payment_failed' for event_id: ${entity_id}, user_id: ${user_id}`);
-                break;
-                
-            default:
-                console.log(`Unhandled entity type in failed payment intent: ${entity_type}`);
-        }
-    } catch (err) {
-        console.error(`Error updating ${entity_type} with ID ${entity_id} after payment failure:`, err);
-    }
+    console.log(`Payment for ${entity_type} ${entity_id} marked as failed`);
+  } catch (error) {
+    console.error('Error handling checkout.session.async_payment_failed:', error);
+    throw error;
+  }
 }
 
+/**
+ * Handle checkout.session.async_payment_succeeded event
+ * This is triggered when an asynchronous payment succeeds
+ */
+async function handleSucceededCheckoutSession(session) {
+  try {
+    console.log('Processing checkout.session.async_payment_succeeded:', session.id);
+    
+    // Extract metadata from the session
+    const { user_id, entity_id, entity_type } = session.metadata || {};
+    
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in checkout session:', session.id);
+      return;
+    }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'succeeded', 
+          checkout_session_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
+    
+    // Update entity status based on entity_type
+    switch (entity_type) {
+      case 'order':
+        await updateOrderStatus(entity_id, 'paid');
+        break;
+      case 'booking':
+        await updateBookingStatus(entity_id, 'confirmed');
+        break;
+      case 'tournament':
+        await updateTournamentRegistrationStatus(entity_id, 'paid');
+        break;
+      default:
+        console.log(`No specific handler for entity_type: ${entity_type}`);
+    }
+
+    console.log(`Payment for ${entity_type} ${entity_id} marked as succeeded`);
+  } catch (error) {
+    console.error('Error handling checkout.session.async_payment_succeeded:', error);
+    throw error;
+  }
+}
+
+/**
+ * Handle payment_intent.succeeded event
+ * This is triggered when a payment intent is successful
+ */
+async function handleSuccessfulPaymentIntent(paymentIntent) {
+  try {
+    console.log('Processing payment_intent.succeeded:', paymentIntent.id);
+    
+    // Extract metadata from the payment intent
+    const { user_id, entity_id, entity_type } = paymentIntent.metadata || {};
+    
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in payment intent:', paymentIntent.id);
+      return;
+    }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'succeeded', 
+          payment_intent_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [paymentIntent.id, user_id, entity_id, entity_type]);
+    
+    // Update entity status based on entity_type
+    switch (entity_type) {
+      case 'order':
+        await updateOrderStatus(entity_id, 'paid');
+        break;
+      case 'booking':
+        await updateBookingStatus(entity_id, 'confirmed');
+        break;
+      case 'tournament':
+        await updateTournamentRegistrationStatus(entity_id, 'paid');
+        break;
+      default:
+        console.log(`No specific handler for entity_type: ${entity_type}`);
+    }
+
+    console.log(`Payment for ${entity_type} ${entity_id} marked as succeeded`);
+  } catch (error) {
+    console.error('Error handling payment_intent.succeeded:', error);
+    throw error;
+  }
+}
+
+/**
+ * Handle payment_intent.payment_failed event
+ * This is triggered when a payment intent fails
+ */
+async function handleFailedPaymentIntent(paymentIntent) {
+  try {
+    console.log('Processing payment_intent.payment_failed:', paymentIntent.id);
+    
+    // Extract metadata from the payment intent
+    const { user_id, entity_id, entity_type } = paymentIntent.metadata || {};
+    
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in payment intent:', paymentIntent.id);
+      return;
+    }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments 
+      SET status = 'failed', 
+          payment_intent_id = ?, 
+          updated_at = NOW() 
+      WHERE user_id = ? 
+        AND entity_id = ? 
+        AND entity_type = ? 
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [paymentIntent.id, user_id, entity_id, entity_type]);
+    
+    console.log(`Payment for ${entity_type} ${entity_id} marked as failed`);
+  } catch (error) {
+    console.error('Error handling payment_intent.payment_failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to update order status
+ */
+async function updateOrderStatus(orderId, status) {
+  try {
+    const updateQuery = `
+      UPDATE Orders 
+      SET payment_status = ? 
+      WHERE order_id = ?
+    `;
+    
+    await db.query(updateQuery, [status, orderId]);
+    console.log(`Order ${orderId} status updated to ${status}`);
+  } catch (error) {
+    console.error(`Error updating order status: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to update booking status
+ */
+async function updateBookingStatus(bookingId, status) {
+  try {
+    const updateQuery = `
+      UPDATE Bookings 
+      SET status = ? 
+      WHERE booking_id = ?
+    `;
+    
+    await db.query(updateQuery, [status, bookingId]);
+    console.log(`Booking ${bookingId} status updated to ${status}`);
+  } catch (error) {
+    console.error(`Error updating booking status: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to update tournament registration status
+ */
+async function updateTournamentRegistrationStatus(registrationId, status) {
+  try {
+    const updateQuery = `
+      UPDATE TournamentRegistrations 
+      SET payment_status = ? 
+      WHERE registration_id = ?
+    `;
+    
+    await db.query(updateQuery, [status, registrationId]);
+    console.log(`Tournament registration ${registrationId} payment status updated to ${status}`);
+  } catch (error) {
+    console.error(`Error updating tournament registration status: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Get webhook status
+ * This is used for debugging webhook issues
+ */
+const getWebhookStatus = (req, res) => {
+  try {
+    // Return webhook configuration details
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    
+    res.status(200).json({
+      success: true,
+      webhook: {
+        endpoint: `${req.protocol}://${req.get('host')}/api/v1/payment/webhook`,
+        secret: webhookSecret ? 'Configured' : 'Not configured',
+        server_configuration: {
+          raw_body_parser: true,
+          body_parser_skipped: true
+        },
+        status: webhookSecret ? 'ready' : 'missing webhook secret',
+        events: [
+          'checkout.session.completed',
+          'checkout.session.expired',
+          'checkout.session.async_payment_failed',
+          'checkout.session.async_payment_succeeded',
+          'payment_intent.succeeded',
+          'payment_intent.payment_failed'
+        ]
+      }
+    });
+  } catch (error) {
+    console.error('Error getting webhook status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get webhook status',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
-    handleStripeWebhook
+  handleStripeWebhook: handleWebhook,
+  handleWebhook,
+  getWebhookStatus
 };

@@ -100,6 +100,7 @@ const createTables = async () => {
                 tournament_id INT,
                 status ENUM('registered', 'completed'),
                 payment_status ENUM('pending', 'paid') DEFAULT 'pending',
+                payment_option ENUM('online', 'at_event') DEFAULT 'online',
                 FOREIGN KEY (user_id) REFERENCES Users(user_id),
                 FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
             );`
@@ -240,6 +241,29 @@ const createTables = async () => {
         }
 
         // CheckoutPayment
+        // Ensure payment_intent_id column is nullable in Payments (safe migration)
+        try {
+            const [piCol] = await db.query(`SHOW COLUMNS FROM Payments WHERE Field = 'payment_intent_id';`);
+            if (piCol.length && piCol[0].Null === 'NO') {
+                await db.query(`ALTER TABLE Payments MODIFY COLUMN payment_intent_id VARCHAR(255) NULL;`);
+                console.log('Modified payment_intent_id to allow NULL');
+            }
+        } catch (error) {
+            console.error('Error modifying payment_intent_id column:', error.message);
+        }
+        // Ensure checkout_session_id column exists in Payments (safe migration)
+        try {
+            const [columns] = await db.query(`SHOW COLUMNS FROM Payments LIKE 'checkout_session_id';`);
+            if (columns.length === 0) {
+                await db.query(`ALTER TABLE Payments ADD COLUMN checkout_session_id VARCHAR(255) NULL AFTER payment_intent_id;`);
+                console.log('Added checkout_session_id column to Payments');
+            }
+        } catch (err) {
+            if (!err.message.includes('ER_NO_SUCH_TABLE')) {
+                console.error('Error adding checkout_session_id column:', err);
+            }
+        }
+
         await db.query(`
             
         CREATE TABLE IF NOT EXISTS Payments (
@@ -405,6 +429,23 @@ const createTables = async () => {
             // Ignore error if column already exists
             if (!err.message.includes('Duplicate column name') && !err.message.includes('already exists')) {
                 console.error('Error altering Products table:', err);
+            }
+        }
+
+        // Create indexes for faster queries
+        const tables = ['Users', 'VRSessions', 'Bookings', 'Tournaments', 'TournamentRegistrations', 'Products', 'Orders', 'OrderItems', 'Payments', 'ShippingInformation', 'GiftCards', 'UserGiftCards', 'Cart', 'Wishlist'];
+        for (const table of tables) {
+            try {
+                // Check if the table has a 'created_at' column
+                const [columns] = await db.query(`SHOW COLUMNS FROM ${table} LIKE 'created_at'`);
+                if (columns.length > 0) {
+                    await db.query(`CREATE INDEX idx_${table}_created_at ON ${table}(created_at)`);
+                }
+            } catch (err) {
+                // Ignore errors if index already exists
+                if (!err.message.includes('Duplicate key name')) {
+                    console.error(`Error creating index for ${table}:`, err);
+                }
             }
         }
 
