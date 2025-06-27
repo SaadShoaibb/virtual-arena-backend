@@ -76,6 +76,19 @@ const createTables = async () => {
         )
 
 
+        // Add payment_id column to Bookings if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`SHOW COLUMNS FROM Bookings LIKE 'payment_id';`);
+            if (columns.length === 0) {
+                await db.query(`ALTER TABLE Bookings ADD COLUMN payment_id INT NULL AFTER session_status;`);
+                await db.query(`ALTER TABLE Bookings ADD CONSTRAINT fk_bookings_payment FOREIGN KEY (payment_id) REFERENCES Payments(payment_id) ON DELETE SET NULL;`);
+                console.log('payment_id column added to Bookings successfully');
+            }
+        } catch (error) {
+            console.log('Error adding payment_id column to Bookings:', error.message);
+        }
+
         // Tournaments Table
         await db.query(`
             CREATE TABLE IF NOT EXISTS Tournaments (
