@@ -521,10 +521,35 @@ const createTables = async () => {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `);
 
+        // Add item_type column to Cart if it doesn't exist
+        try {
+            const [columns] = await db.query(`SHOW COLUMNS FROM Cart LIKE 'item_type';`);
+            if (columns.length === 0) {
+                await db.query(`ALTER TABLE Cart ADD COLUMN item_type ENUM('product', 'tournament') DEFAULT 'product';`);
+                console.log('item_type column added to Cart successfully');
+            }
+        } catch (error) {
+            console.log('Error adding item_type column to Cart:', error.message);
+        }
+
+        // Add connected_account_id column to Payments if it doesn't exist
+        try {
+            const [columns] = await db.query(`SHOW COLUMNS FROM Payments LIKE 'connected_account_id';`);
+            if (columns.length === 0) {
+                await db.query(`ALTER TABLE Payments ADD COLUMN connected_account_id VARCHAR(255) NULL AFTER currency, ADD INDEX (connected_account_id);`);
+                console.log('connected_account_id column added to Payments successfully');
+            }
+        } catch (error) {
+            console.log('Error adding connected_account_id column to Payments:', error.message);
+        }
+
+        // ---- End additional migrations ----
         console.log("Table Has been created")
     } catch (error) {
         console.error('Error creating tables:', error);
     }
 }
+
+
 
 module.exports = { createTables }
