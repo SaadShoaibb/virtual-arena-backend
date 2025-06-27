@@ -184,6 +184,29 @@ const createTables = async () => {
             );`
         );
 
+        // --- TEMPORARY DATA CLEAN-UP: normalize old localhost image URLs ---
+        // This block strips the 'http://localhost:8080' prefix that was stored in early
+        // development so that images resolve correctly in production.  When you are
+        // running the whole stack on localhost:8080 again, either comment-out this
+        // block or swap LOCAL_PREFIX/NEW_PREFIX to restore the full origin.
+        try {
+            const LOCAL_PREFIX = 'http://localhost:8080';
+            const NEW_PREFIX   = ''; // '' = make the URL relative (preferred in prod)
+
+            await db.query(`UPDATE ProductImages
+                            SET image_url = REPLACE(image_url, '${LOCAL_PREFIX}', '${NEW_PREFIX}')
+                            WHERE image_url LIKE '${LOCAL_PREFIX}/%';`);
+
+            await db.query(`UPDATE DealImages
+                            SET image_url = REPLACE(image_url, '${LOCAL_PREFIX}', '${NEW_PREFIX}')
+                            WHERE image_url LIKE '${LOCAL_PREFIX}/%';`);
+
+            console.log('✅ Image URL prefixes normalized');
+        } catch (err) {
+            console.error('Error normalizing image URLs:', err.message);
+        }
+        // --------------------------------------------------------------------
+
         // Shipping Addresses
         await db.query(`
             CREATE TABLE IF NOT EXISTS ShippingAddresses (
