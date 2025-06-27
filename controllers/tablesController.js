@@ -214,7 +214,7 @@ const createTables = async () => {
         // ON DELETE CASCADE.
         try {
             const [result] = await db.query(
-                `DELETE FROM Products WHERE category IS NULL OR category = ''`
+                `DELETE FROM Products WHERE category IS NULL OR TRIM(category) = '' OR LOWER(category) = 'null'`
             );
             if (result.affectedRows) {
                 console.log(`🗑  Deleted ${result.affectedRows} product(s) without category`);
