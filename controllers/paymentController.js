@@ -11,9 +11,10 @@ const createCheckoutSession = async (req, res) => {
   try {
     console.log('Received checkout session request:', req.body);
     const { user_id, amount, connected_account_id, entity_type, entity_id } = req.body;
+    const numericAmount = Number(amount);
     
     // Validate required fields
-    if (!user_id || !amount) {
+    if (!user_id || Number.isNaN(numericAmount)) {
       console.log('Missing required fields:', { user_id, amount });
       return res.status(400).json({ 
         success: false, 
@@ -22,7 +23,7 @@ const createCheckoutSession = async (req, res) => {
     }
 
     // Validate amount is a number and at least 0.50
-    if (typeof amount !== 'number' || amount < 0.50) {
+    if (Number.isNaN(numericAmount) || numericAmount < 0.5) {
       return res.status(400).json({
         success: false,
         message: 'Amount must be a number and at least 0.50 USD'
@@ -54,7 +55,7 @@ const createCheckoutSession = async (req, res) => {
           name: 'Generic Payment',
           description: 'Virtual Arena Payment',
         },
-        unit_amount: Math.round(amount * 100), // Convert to cents
+        unit_amount: Math.round(numericAmount * 100), // Convert to cents
       },
       quantity: 1,
     }];
@@ -79,7 +80,7 @@ const createCheckoutSession = async (req, res) => {
     // Use connected account if specified
     if (connected_account_id) {
       sessionParams.payment_intent_data = {
-        application_fee_amount: Math.round(amount * 0.1 * 100), // 10% fee
+        application_fee_amount: Math.round(numericAmount * 0.1 * 100),
         transfer_data: {
           destination: connected_account_id,
         },
@@ -94,9 +95,9 @@ const createCheckoutSession = async (req, res) => {
       'INSERT INTO Payments (user_id, entity_type, entity_id, amount, currency, checkout_session_id, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
         user_id,
-        entity_type || 'generic',
+        entity_type || 'order',
         entity_id || 0,
-        amount,
+        numericAmount,
         'usd', // default currency
         session.id,
         connected_account_id || null
