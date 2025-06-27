@@ -207,6 +207,23 @@ const createTables = async () => {
         }
         // --------------------------------------------------------------------
 
+        // --- TEMPORARY DATA CLEAN-UP: delete products without a category -----
+        // Some early test products were inserted before the `category` column
+        // became required. They break the admin panel. We remove them once at
+        // startup. ProductImages rows are automatically removed thanks to
+        // ON DELETE CASCADE.
+        try {
+            const [result] = await db.query(
+                `DELETE FROM Products WHERE category IS NULL OR category = ''`
+            );
+            if (result.affectedRows) {
+                console.log(`🗑  Deleted ${result.affectedRows} product(s) without category`);
+            }
+        } catch (err) {
+            console.error('Error deleting uncategorised products:', err.message);
+        }
+        // --------------------------------------------------------------------
+
         // Shipping Addresses
         await db.query(`
             CREATE TABLE IF NOT EXISTS ShippingAddresses (
