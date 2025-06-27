@@ -359,6 +359,31 @@ const createTables = async () => {
             console.log('Error altering product_id column in Cart:', error.message);
         }
 
+        // Add tournament_id column to Cart if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM Cart LIKE 'tournament_id';
+            `);
+            
+            if (columns.length === 0) {
+                // Add the column
+                await db.query(`
+                    ALTER TABLE Cart
+                    ADD COLUMN tournament_id INT NULL AFTER product_id;
+                `);
+
+                // Add the foreign-key constraint separately to avoid errors if FK exists
+                await db.query(`
+                    ALTER TABLE Cart
+                    ADD CONSTRAINT fk_cart_tournament FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id) ON DELETE CASCADE;
+                `);
+                console.log('tournament_id column added to Cart successfully');
+            }
+        } catch (error) {
+            console.log('Error adding tournament_id column to Cart:', error.message);
+        }
+
         // Add payment_option column to Cart if it doesn't exist
         try {
             // Check if column exists first
