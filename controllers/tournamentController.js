@@ -11,12 +11,44 @@ const pusher = new Pusher({
 // Add Tournament controller
 const addTournament = async (req, res) => {
     try {
-        const { name, start_date, end_date, status, city, country, state, ticket_price } = req.body;
+        const {
+            name,
+            description,
+            start_date,
+            end_date,
+            status,
+            city,
+            country,
+            state,
+            ticket_price,
+            max_participants,
+            prize_pool,
+            game_type,
+            rules,
+            requirements
+        } = req.body;
 
         const [result] = await db.query(`
-            INSERT INTO Tournaments (name, start_date, end_date, status,city,country,state,ticket_price ) 
-            VALUES (?, ?, ?, ?,?,?, ?,?)
-        `, [name, start_date, end_date, status || 'upcoming', city, country, state, ticket_price]);
+            INSERT INTO Tournaments (
+                name, description, start_date, end_date, status, city, country, state,
+                ticket_price, max_participants, prize_pool, game_type, rules, requirements
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            name,
+            description,
+            start_date,
+            end_date,
+            status || 'upcoming',
+            city,
+            country,
+            state,
+            ticket_price,
+            max_participants,
+            prize_pool,
+            game_type,
+            rules,
+            requirements
+        ]);
 
         res.status(201).json({
             success: true,
@@ -34,10 +66,18 @@ const addTournament = async (req, res) => {
 };
 
 
-// Get all tournaments 
+// Get all tournaments
 const getAllTournaments = async (req, res) => {
     try {
-        const [tournaments] = await db.query(`SELECT * FROM Tournaments`);
+        const [tournaments] = await db.query(`
+            SELECT t.*,
+                   COUNT(tr.registration_id) as registered_count
+            FROM Tournaments t
+            LEFT JOIN TournamentRegistrations tr ON t.tournament_id = tr.tournament_id
+                AND tr.status != 'disqualified'
+            GROUP BY t.tournament_id
+            ORDER BY t.start_date ASC
+        `);
 
         res.status(200).json({
             success: true,
@@ -91,13 +131,46 @@ const getTournamentById = async (req, res) => {
 const updateTournament = async (req, res) => {
     try {
         const { tournament_id } = req.params;
-        const { name, start_date, end_date, status } = req.body;
+        const {
+            name,
+            description,
+            start_date,
+            end_date,
+            status,
+            city,
+            country,
+            state,
+            ticket_price,
+            max_participants,
+            prize_pool,
+            game_type,
+            rules,
+            requirements
+        } = req.body;
 
         const [result] = await db.query(`
-            UPDATE Tournaments 
-            SET name = ?, start_date = ?, end_date = ?, status = ? 
+            UPDATE Tournaments
+            SET name = ?, description = ?, start_date = ?, end_date = ?, status = ?,
+                city = ?, country = ?, state = ?, ticket_price = ?, max_participants = ?,
+                prize_pool = ?, game_type = ?, rules = ?, requirements = ?
             WHERE tournament_id = ?
-        `, [name, start_date, end_date, status, tournament_id]);
+        `, [
+            name,
+            description,
+            start_date,
+            end_date,
+            status,
+            city,
+            country,
+            state,
+            ticket_price,
+            max_participants,
+            prize_pool,
+            game_type,
+            rules,
+            requirements,
+            tournament_id
+        ]);
 
         if (result.affectedRows === 0) {
             return res.status(404).json({

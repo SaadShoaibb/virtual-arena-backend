@@ -64,13 +64,37 @@ const handleWebhook = async (req, res) => {
  */
 async function handleCheckoutSessionCompleted(session) {
   try {
-    console.log('Processing checkout.session.completed:', session.id);
-    
+    console.log('🎉 Processing checkout.session.completed:', session.id);
+    console.log('💳 Session details:', {
+      id: session.id,
+      payment_status: session.payment_status,
+      amount_total: session.amount_total,
+      metadata: session.metadata
+    });
+
     // Extract metadata from the session
     const { user_id, entity_id, entity_type } = session.metadata || {};
-    
-    if (!user_id || !entity_id || !entity_type) {
-      console.error('Missing required metadata in checkout session:', session.id);
+
+    console.log('Webhook metadata:', { user_id, entity_id, entity_type });
+
+    // For guest bookings, user_id might be 0, which is valid
+    if (user_id === undefined || user_id === null) {
+      console.error('Missing user_id in checkout session:', session.id);
+      return;
+    }
+
+    // If this is an order payment (from cart checkout), handle it differently
+    if (entity_type === 'order' && entity_id) {
+      // Update the existing order status
+      await updateOrderStatus(entity_id, 'paid');
+      await clearUserCart(user_id);
+      console.log(`Order ${entity_id} marked as paid and cart cleared for user ${user_id}`);
+      return;
+    }
+
+    // For direct payments (tournament/event), we need entity_id and entity_type
+    if (!entity_id || !entity_type) {
+      console.error('Missing required metadata for direct payment in checkout session:', session.id);
       return;
     }
 
@@ -89,18 +113,26 @@ async function handleCheckoutSessionCompleted(session) {
     await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
     
     // Update entity status based on entity_type
+    console.log(`🔄 Processing payment success for entity_type: ${entity_type}, entity_id: ${entity_id}, user_id: ${user_id}`);
+
     switch (entity_type) {
       case 'order':
         await updateOrderStatus(entity_id, 'paid');
+        // Clear user's cart after successful order payment
+        await clearUserCart(user_id);
         break;
       case 'booking':
-        await updateBookingStatus(entity_id, 'confirmed');
+        console.log(`📅 Updating booking ${entity_id} status to paid`);
+        await updateBookingStatus(entity_id, 'paid');
         break;
       case 'tournament':
         await updateTournamentRegistrationStatus(entity_id, 'paid');
         break;
+      case 'event':
+        await updateEventRegistrationStatus(entity_id, 'paid');
+        break;
       default:
-        console.log(`No specific handler for entity_type: ${entity_type}`);
+        console.log(`⚠️ No specific handler for entity_type: ${entity_type}`);
     }
 
     console.log(`Payment for ${entity_type} ${entity_id} marked as succeeded`);
@@ -220,7 +252,7 @@ async function handleSucceededCheckoutSession(session) {
         await updateOrderStatus(entity_id, 'paid');
         break;
       case 'booking':
-        await updateBookingStatus(entity_id, 'confirmed');
+        await updateBookingStatus(entity_id, 'paid');
         break;
       case 'tournament':
         await updateTournamentRegistrationStatus(entity_id, 'paid');
@@ -272,7 +304,7 @@ async function handleSuccessfulPaymentIntent(paymentIntent) {
         await updateOrderStatus(entity_id, 'paid');
         break;
       case 'booking':
-        await updateBookingStatus(entity_id, 'confirmed');
+        await updateBookingStatus(entity_id, 'paid');
         break;
       case 'tournament':
         await updateTournamentRegistrationStatus(entity_id, 'paid');
@@ -347,18 +379,24 @@ async function updateOrderStatus(orderId, status) {
 /**
  * Helper function to update booking status
  */
-async function updateBookingStatus(bookingId, status) {
+async function updateBookingStatus(bookingId, paymentStatus) {
   try {
+    console.log(`Attempting to update booking ${bookingId} payment_status to ${paymentStatus}`);
+
     const updateQuery = `
-      UPDATE Bookings 
-      SET status = ? 
+      UPDATE Bookings
+      SET payment_status = ?
       WHERE booking_id = ?
     `;
-    
-    await db.query(updateQuery, [status, bookingId]);
-    console.log(`Booking ${bookingId} status updated to ${status}`);
+
+    const [result] = await db.query(updateQuery, [paymentStatus, bookingId]);
+    console.log(`Booking ${bookingId} payment_status updated to ${paymentStatus}. Affected rows: ${result.affectedRows}`);
+
+    if (result.affectedRows === 0) {
+      console.warn(`No booking found with ID ${bookingId}`);
+    }
   } catch (error) {
-    console.error(`Error updating booking status: ${error.message}`);
+    console.error(`Error updating booking payment status: ${error.message}`);
     throw error;
   }
 }
@@ -420,6 +458,33 @@ const getWebhookStatus = (req, res) => {
     });
   }
 };
+
+/**
+ * Clear user's cart after successful payment
+ */
+async function clearUserCart(user_id) {
+  try {
+    await db.query('DELETE FROM Cart WHERE user_id = ?', [user_id]);
+    console.log(`Cart cleared for user ${user_id}`);
+  } catch (error) {
+    console.error('Error clearing cart:', error);
+  }
+}
+
+/**
+ * Update event registration status
+ */
+async function updateEventRegistrationStatus(registration_id, status) {
+  try {
+    await db.query(
+      'UPDATE EventRegistrations SET payment_status = ? WHERE registration_id = ?',
+      [status, registration_id]
+    );
+    console.log(`Event registration ${registration_id} status updated to ${status}`);
+  } catch (error) {
+    console.error('Error updating event registration status:', error);
+  }
+}
 
 module.exports = {
   handleStripeWebhook: handleWebhook,

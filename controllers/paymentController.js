@@ -13,12 +13,12 @@ const createCheckoutSession = async (req, res) => {
     const { user_id, amount, connected_account_id, entity_type, entity_id } = req.body;
     const numericAmount = Number(amount);
     
-    // Validate required fields
-    if (!user_id || Number.isNaN(numericAmount)) {
+    // Validate required fields - user_id can be 0 for guest bookings
+    if (user_id === undefined || user_id === null || Number.isNaN(numericAmount)) {
       console.log('Missing required fields:', { user_id, amount });
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required fields: user_id and amount are required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: user_id and amount are required'
       });
     }
 
@@ -38,14 +38,28 @@ const createCheckoutSession = async (req, res) => {
       });
     }
 
-    // Get user info
-    const [userRows] = await db.query('SELECT * FROM Users WHERE user_id = ?', [user_id]);
-    if (userRows.length === 0) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+    // Get user info - handle guest bookings (user_id = 0)
+    let userEmail = 'guest@vrtualarena.ca';
+    let userName = 'Guest User';
+
+    if (user_id > 0) {
+      const [userRows] = await db.query('SELECT * FROM Users WHERE user_id = ?', [user_id]);
+      if (userRows.length === 0) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      const user = userRows[0];
+      userEmail = user.email;
+      userName = user.username;
+    } else {
+      // For guest bookings, try to get email from the booking if available
+      if (entity_type === 'booking' && entity_id) {
+        const [bookingRows] = await db.query('SELECT guest_email, guest_name FROM Bookings WHERE booking_id = ?', [entity_id]);
+        if (bookingRows.length > 0 && bookingRows[0].guest_email) {
+          userEmail = bookingRows[0].guest_email;
+          userName = bookingRows[0].guest_name || 'Guest User';
+        }
+      }
     }
-    const user = userRows[0];
-    const userEmail = user.email;
-    const userName = user.username;
 
     // Create a generic line item
     const lineItems = [{
@@ -74,6 +88,8 @@ const createCheckoutSession = async (req, res) => {
       metadata: {
         user_id,
         user_name: userName,
+        entity_type: entity_type || 'order',
+        entity_id: entity_id || '0',
       },
     };
 
@@ -91,10 +107,12 @@ const createCheckoutSession = async (req, res) => {
     const session = await stripe.checkout.sessions.create(sessionParams);
 
     // Create a payment record in the database
+    // Use NULL for guest bookings (user_id = 0) to avoid foreign key constraint issues
+    const paymentUserId = user_id > 0 ? user_id : null;
     const [paymentResult] = await db.query(
       'INSERT INTO Payments (user_id, entity_type, entity_id, amount, currency, checkout_session_id, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
-        user_id,
+        paymentUserId,
         entity_type || 'order',
         entity_id || 0,
         numericAmount,
@@ -121,10 +139,55 @@ const createCheckoutSession = async (req, res) => {
       );
     }
 
-    res.status(200).json({ 
-      success: true, 
-      sessionId: session.id 
+    // Similarly for event registration
+    if (entity_type === 'event') {
+      await db.query(
+        'UPDATE EventRegistrations SET payment_id = ? WHERE registration_id = ?',
+        [paymentResult.insertId, entity_id]
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      sessionId: session.id
     });
+
+    // Development fallback: Auto-complete payment after 30 seconds if webhook doesn't work
+    if (process.env.NODE_ENV !== 'production') {
+      setTimeout(async () => {
+        try {
+          console.log(`🔄 Development fallback: Checking payment status for session ${session.id}`);
+
+          // Check if payment is still pending
+          const [pendingPayment] = await db.query(
+            'SELECT payment_id, entity_id, entity_type FROM Payments WHERE checkout_session_id = ? AND status = ?',
+            [session.id, 'pending']
+          );
+
+          if (pendingPayment.length > 0) {
+            const payment = pendingPayment[0];
+            console.log(`⚠️ Payment ${payment.payment_id} still pending after 30s, auto-completing...`);
+
+            // Update payment status
+            await db.query(
+              'UPDATE Payments SET status = ?, updated_at = NOW() WHERE payment_id = ?',
+              ['succeeded', payment.payment_id]
+            );
+
+            // Update booking status if it's a booking
+            if (payment.entity_type === 'booking') {
+              await db.query(
+                'UPDATE Bookings SET payment_status = ? WHERE booking_id = ?',
+                ['paid', payment.entity_id]
+              );
+              console.log(`✅ Development fallback: Auto-completed booking ${payment.entity_id}`);
+            }
+          }
+        } catch (error) {
+          console.log(`⚠️ Development fallback error:`, error.message);
+        }
+      }, 30000); // 30 seconds delay
+    }
   } catch (err) {
     console.error('Error creating checkout session:', err);
     res.status(500).json({ 
@@ -266,8 +329,58 @@ const getPaymentDetails = async (req, res) => {
   }
 };
 
+/**
+ * Get all payments for admin panel
+ */
+const getAllPayments = async (req, res) => {
+  try {
+    console.log('Fetching all payments for admin panel');
+
+    const [payments] = await db.query(`
+      SELECT
+        p.*,
+        CASE
+          WHEN p.entity_type = 'booking' THEN COALESCE(u.name, b.guest_name)
+          WHEN p.entity_type = 'order' THEN COALESCE(u.name, o.guest_name)
+          WHEN p.entity_type = 'tournament' THEN COALESCE(u.name, tr.guest_name)
+          WHEN p.entity_type = 'event' THEN COALESCE(u.name, er.guest_name)
+          ELSE u.name
+        END as customer_name,
+        CASE
+          WHEN p.entity_type = 'booking' THEN COALESCE(u.email, b.guest_email)
+          WHEN p.entity_type = 'order' THEN COALESCE(u.email, o.guest_email)
+          WHEN p.entity_type = 'tournament' THEN COALESCE(u.email, tr.guest_email)
+          WHEN p.entity_type = 'event' THEN COALESCE(u.email, er.guest_email)
+          ELSE u.email
+        END as customer_email,
+        p.status as stripe_payment_status
+      FROM Payments p
+      LEFT JOIN Users u ON p.user_id = u.user_id
+      LEFT JOIN Bookings b ON p.entity_type = 'booking' AND p.entity_id = b.booking_id
+      LEFT JOIN Orders o ON p.entity_type = 'order' AND p.entity_id = o.order_id
+      LEFT JOIN TournamentRegistrations tr ON p.entity_type = 'tournament' AND p.entity_id = tr.registration_id
+      LEFT JOIN EventRegistrations er ON p.entity_type = 'event' AND p.entity_id = er.registration_id
+      ORDER BY p.created_at DESC
+    `);
+
+    res.status(200).json({
+      success: true,
+      message: 'Payments retrieved successfully',
+      payments
+    });
+  } catch (error) {
+    console.error('Error getting all payments:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payments',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createCheckoutSession,
   confirmPayment,
-  getPaymentDetails
+  getPaymentDetails,
+  getAllPayments
 };

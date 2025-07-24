@@ -4,25 +4,24 @@ const isAuthenticated = require('../middlewares/authMiddleware')
 const { addDeal, getDeals, updateDeal, deleteDeal } = require('../controllers/dealsController');
 const upload = require('../middlewares/uploadMiddleware');
 const isAdmin = require('../middlewares/adminMiddleware');
-const { createSession, getSessionById, getAllSessions, updateSession, deleteSession } = require('../controllers/sessionsController');
+const { getSessionById, getAllSessions, updateSession } = require('../controllers/sessionsController');
 const { getAllBookings, updateBooking, deleteBooking, getBookingById } = require('../controllers/bookingController');
 const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration, updateRegistration } = require('../controllers/tournamentController');
+const { addEvent, getAllEvents, getEventById, updateEvent, deleteEvent, getAllEventRegistrations, getEventRegistrationById, updateEventRegistration, deleteEventRegistration } = require('../controllers/eventsController');
 const { addProduct, getAllProducts, getProductById, updateProduct, deleteProduct } = require('../controllers/productController');
 const { createOrder, getAllOrders, getOrderById, updateOrderStatus, deleteOrder, getOrderItemsByOrderId, deleteOrderItem } = require('../controllers/orderController');
 const { getAllUsers, updateUserByAdmin, deleteUser } = require('../controllers/authController');
-const { getUserNotifications } = require('../controllers/notificationController');
+const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead } = require('../controllers/notificationController');
 const { getAllGiftCards, createGiftCard, getGiftCardById, updateGiftCard, deleteGiftCard } = require('../controllers/giftCardController');
 const { getReviewsByEntity } = require('../controllers/reviewController');
 const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransactions, getTopSessions, getUserGrowth, getDashboardStats, getOrderStats } = require('../controllers/dashboardController');
 
 const router = express.Router()
 
-// VR Sessions
-router.post('/add-session',isAuthenticated,isAdmin,createSession)
+// VR Sessions (Read-only - managed automatically from pricing calculator)
 router.get('/get-sessions',isAuthenticated,isAdmin,getAllSessions)
 router.get("/get-session/:session_id",isAuthenticated,isAdmin,getSessionById)
-router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession)
-router.delete('/delete-session/:session_id',isAuthenticated,isAdmin,deleteSession)
+router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession) // Keep edit for price adjustments
 
 
 // booking Sessions
@@ -32,6 +31,13 @@ router.get('/get-booking/:booking_id/',isAuthenticated,isAdmin,getBookingById)
 router.delete('/delete-booking/:booking_id/',isAuthenticated,isAdmin,deleteBooking)
 
 
+// Events
+router.post('/add-event/',isAuthenticated,isAdmin,addEvent)
+router.get('/get-events/',isAuthenticated,isAdmin,getAllEvents)
+router.get('/get-event/:event_id/',isAuthenticated,isAdmin,getEventById)
+router.put('/update-event/:event_id',isAuthenticated,isAdmin,updateEvent)
+router.delete('/delete-event/:event_id',isAuthenticated,isAdmin,deleteEvent)
+
 // Tournaments
 router.post('/add-tournament/',isAuthenticated,isAdmin,addTournament)
 router.get('/get-tournaments/',isAuthenticated,isAdmin,getAllTournaments)
@@ -39,6 +45,11 @@ router.get('/get-tournament/:tournament_id/',isAuthenticated,isAdmin,getTourname
 router.put('/update-tournament/:tournament_id',isAuthenticated,isAdmin,updateTournament)
 router.delete('/delete-tournament/:tournament_id',isAuthenticated,isAdmin,deleteTournament)
 
+// Event Registrations
+router.get('/event-registrations/',isAuthenticated,isAdmin,getAllEventRegistrations)
+router.get('/event-registration/:registration_id',isAuthenticated,isAdmin,getEventRegistrationById)
+router.put('/update-event-registration/:registration_id',isAuthenticated,isAdmin,updateEventRegistration)
+router.delete('/delete-event-registration/:registration_id',isAuthenticated,isAdmin,deleteEventRegistration)
 
 // tournament Registrations
 router.get('/tournament-registrations/',isAuthenticated,isAdmin,getAllRegistrations)
@@ -78,6 +89,8 @@ router.delete('/user/:user_id', isAuthenticated,isAdmin,deleteUser);
 
 //notification
 router.get('/notifications',isAuthenticated,isAdmin,getUserNotifications)
+router.put('/notification/:notification_id/read',isAuthenticated,isAdmin,markNotificationAsRead)
+router.put('/notifications/mark-all-read',isAuthenticated,isAdmin,markAllNotificationsAsRead)
 
 
 //gift cards

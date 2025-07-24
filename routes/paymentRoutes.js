@@ -18,6 +18,12 @@ router.post('/create-checkout-session', paymentController.createCheckoutSession)
 router.post('/confirm-payment', isAuthenticated, paymentController.confirmPayment);
 
 /**
+ * Get all payment details route - requires authentication
+ * This is used by the admin panel to view all payments
+ */
+router.get('/payment-details', isAuthenticated, paymentController.getAllPayments);
+
+/**
  * Get payment details route - requires authentication
  * This is used by the client to view payment details
  */

@@ -1,10 +1,11 @@
 const express = require('express')
 const isAuthenticated = require('../middlewares/authMiddleware')
 const {  getCarts, deleteMultipleCarts, getOneDeal, getDeals } = require('../controllers/dealsController')
-const { createBooking, getBookingById, cancelBooking, getAllUserBookings, updateBooking } = require('../controllers/bookingController')
+const { createBooking, getBookingById, cancelBooking, getAllUserBookings, updateBooking, getBookingAvailability, createGuestBooking, getGuestBooking } = require('../controllers/bookingController')
 const {  getRegistrationById, getUserRegistrations, registerForTournament, getAllTournaments } = require('../controllers/tournamentController')
+const { getAllEvents, getEventById, registerForEvent, getUserEventRegistrations } = require('../controllers/eventsController')
 const { getAllProducts, getProductById } = require('../controllers/productController')
-const { createOrderWithItems, getOrderById, getOrdersByUserId, addToCart, getCartByUserId, updateCartItemQuantity, removeFromCart,  getUserOrders } = require('../controllers/orderController')
+const { createOrderWithItems, getOrderById, getOrdersByUserId, addToCart, getCartByUserId, updateCartItemQuantity, removeFromCart, getUserOrders, addToGuestCart, getGuestCart } = require('../controllers/orderController')
 const { getAllSessions } = require('../controllers/sessionsController')
 const { getWishlistProducts, addToWishlist, removeFromWishlist, getUserAddress, updateUserAddress } = require('../controllers/authController')
 const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead } = require('../controllers/notificationController')
@@ -15,8 +16,8 @@ const router = express.Router()
 // routes
 
 
-//sessions
-router.get('/get-sessions',isAuthenticated,getAllSessions)
+//sessions (Public route for guest booking)
+router.get('/get-sessions', getAllSessions) // Removed isAuthenticated to allow guest access
 // Bookings
 router.post('/book-session/',isAuthenticated,createBooking),
 router.get('/get-bookings/',isAuthenticated,getAllUserBookings)
@@ -24,8 +25,18 @@ router.get('/get-booking/:booking_id/',isAuthenticated,getBookingById)
 router.put('/cancel-booking/:booking_id/',isAuthenticated,cancelBooking)
 router.put('/update-booking/:booking_id/',isAuthenticated,updateBooking)
 
-// Tournament Registrations
+// Booking Availability & Guest Bookings (Public routes)
+router.get('/booking-availability', getBookingAvailability) // Public route for calendar
+router.post('/guest-booking', createGuestBooking) // Public route for guest bookings
+router.get('/guest-booking/:booking_reference', getGuestBooking) // Public route to check guest booking
 
+// Events
+router.get('/get-events',getAllEvents)
+router.get('/get-event/:event_id',getEventById)
+router.post('/register-for-event/:event_id',isAuthenticated,registerForEvent)
+router.get('/event-registrations/',isAuthenticated,getUserEventRegistrations)
+
+// Tournament Registrations
 router.get('/get-tournaments',getAllTournaments)
 router.post('/register-for-tournament/',isAuthenticated,registerForTournament)
 router.get('/tournament-registrations/',isAuthenticated,getUserRegistrations)
@@ -51,6 +62,10 @@ router.get('/carts/', isAuthenticated,getCartByUserId);
 router.put('/cart/:cart_id', isAuthenticated,updateCartItemQuantity);
 router.delete('/cart/:cart_id', isAuthenticated,removeFromCart);
 
+// Guest Cart Routes (Public routes)
+router.post('/guest-cart', addToGuestCart); // Add item to guest cart
+router.get('/guest-cart/:guest_session_id', getGuestCart); // Get guest cart
+
 // wishlist
 // Get all wishlist products for a user
 router.get('/wishlist',isAuthenticated, getWishlistProducts);
@@ -62,7 +77,7 @@ router.delete('/wishlist/:product_id',isAuthenticated, removeFromWishlist);
 
 //Notification
 router.get('/notifications',isAuthenticated,getUserNotifications)
-router.put('/notification/:notification_id/read',markNotificationAsRead)
+router.put('/notification/:notification_id/read',isAuthenticated,markNotificationAsRead)
 router.put('/notifications/read-all',isAuthenticated,markAllNotificationsAsRead)
 
 

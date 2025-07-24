@@ -78,7 +78,7 @@ const markNotificationAsRead = async (req, res) => {
 //mark all notification as read
 const markAllNotificationsAsRead = async (req, res) => {
     try {
-        const {user_id} = req.user.id;
+        const user_id = req.user.id;
 
         await db.query(
             `UPDATE Notifications SET is_read = TRUE WHERE user_id = ?`,

@@ -52,11 +52,11 @@ const createTables = async () => {
             );`
         )
 
-        // VR Session Booking Table
+        // VR Session Booking Table (Enhanced for guest bookings)
         await db.query(`
              CREATE TABLE IF NOT EXISTS Bookings (
                  booking_id INT AUTO_INCREMENT PRIMARY KEY,
-                 user_id INT,
+                 user_id INT NULL, -- Allow NULL for guest bookings
                  session_id INT,
                  machine_type ENUM(
                      'Free Roaming VR Arena 2.0',
@@ -70,8 +70,20 @@ const createTables = async () => {
                  end_time DATETIME,
                  payment_status ENUM('pending', 'paid', 'cancelled') DEFAULT 'pending',
                  session_status ENUM('pending', 'started', 'completed') DEFAULT 'pending',
+                 -- Guest booking fields
+                 guest_name VARCHAR(255) NULL,
+                 guest_email VARCHAR(255) NULL,
+                 guest_phone VARCHAR(20) NULL,
+                 is_guest_booking BOOLEAN DEFAULT FALSE,
+                 booking_reference VARCHAR(50) UNIQUE NULL, -- Unique reference for guest bookings
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                  FOREIGN KEY (user_id) REFERENCES Users(user_id),
-                 FOREIGN KEY (session_id) REFERENCES VRSessions(session_id)
+                 FOREIGN KEY (session_id) REFERENCES VRSessions(session_id),
+                 INDEX idx_start_time (start_time),
+                 INDEX idx_session_date (session_id, start_time),
+                 INDEX idx_guest_email (guest_email),
+                 INDEX idx_booking_reference (booking_reference)
     );`
         )
 
@@ -89,21 +101,64 @@ const createTables = async () => {
             console.log('Error adding payment_id column to Bookings:', error.message);
         }
 
-        // Tournaments Table
+        // Events Table (separate from tournaments)
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS Events (
+                event_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                start_date DATETIME,
+                end_date DATETIME,
+                city VARCHAR(255) NOT NULL,
+                country VARCHAR(255) NOT NULL,
+                state VARCHAR(255) NOT NULL,
+                ticket_price DECIMAL(10, 2) NOT NULL,
+                max_participants INT DEFAULT NULL,
+                event_type ENUM('party', 'corporate', 'birthday', 'special', 'other') DEFAULT 'other',
+                status ENUM('upcoming', 'ongoing', 'completed', 'cancelled') DEFAULT 'upcoming',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            );`
+        )
+
+        // Tournaments Table (enhanced with more fields)
         await db.query(`
             CREATE TABLE IF NOT EXISTS Tournaments (
                 tournament_id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
+                description TEXT,
                 start_date DATETIME,
+                end_date DATETIME,
                 city VARCHAR(255) NOT NULL,
                 country VARCHAR(255) NOT NULL,
                 state VARCHAR(255) NOT NULL,
-                end_date DATETIME,
-                ticket_price DECIMAL(10, 2) NOT NULL, 
-                status ENUM('upcoming', 'ongoing', 'completed') DEFAULT 'upcoming'
+                ticket_price DECIMAL(10, 2) NOT NULL,
+                max_participants INT DEFAULT NULL,
+                prize_pool DECIMAL(10, 2) DEFAULT 0.00,
+                game_type VARCHAR(100),
+                rules TEXT,
+                requirements TEXT,
+                status ENUM('upcoming', 'ongoing', 'completed', 'cancelled') DEFAULT 'upcoming',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             );`
         )
 
+
+        // Event Registrations
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS EventRegistrations (
+                registration_id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                event_id INT,
+                status ENUM('registered', 'attended', 'cancelled') DEFAULT 'registered',
+                payment_status ENUM('pending', 'paid') DEFAULT 'pending',
+                payment_option ENUM('online', 'at_event') DEFAULT 'online',
+                registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES Users(user_id),
+                FOREIGN KEY (event_id) REFERENCES Events(event_id)
+            );`
+        )
 
         //Tournaments Registrations
         await db.query(`
@@ -111,9 +166,11 @@ const createTables = async () => {
                 registration_id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT,
                 tournament_id INT,
-                status ENUM('registered', 'completed'),
+                status ENUM('registered', 'completed', 'disqualified') DEFAULT 'registered',
                 payment_status ENUM('pending', 'paid') DEFAULT 'pending',
                 payment_option ENUM('online', 'at_event') DEFAULT 'online',
+                registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                team_name VARCHAR(255) DEFAULT NULL,
                 FOREIGN KEY (user_id) REFERENCES Users(user_id),
                 FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
             );`
@@ -143,7 +200,7 @@ const createTables = async () => {
             const [columns] = await db.query(`
                 SHOW COLUMNS FROM TournamentRegistrations LIKE 'payment_option';
             `);
-            
+
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE TournamentRegistrations
@@ -153,6 +210,58 @@ const createTables = async () => {
             }
         } catch (error) {
             console.log('Error adding payment_option column:', error.message);
+        }
+
+        // Add guest registration fields to TournamentRegistrations
+        try {
+            // Make user_id nullable for guest registrations
+            await db.query(`ALTER TABLE TournamentRegistrations MODIFY COLUMN user_id INT NULL;`);
+
+            // Add guest fields if they don't exist
+            const guestFields = [
+                'guest_name VARCHAR(255) NULL',
+                'guest_email VARCHAR(255) NULL',
+                'guest_phone VARCHAR(20) NULL',
+                'is_guest_registration BOOLEAN DEFAULT FALSE',
+                'registration_reference VARCHAR(50) UNIQUE NULL'
+            ];
+
+            for (const field of guestFields) {
+                const fieldName = field.split(' ')[0];
+                const [columns] = await db.query(`SHOW COLUMNS FROM TournamentRegistrations LIKE '${fieldName}';`);
+                if (columns.length === 0) {
+                    await db.query(`ALTER TABLE TournamentRegistrations ADD COLUMN ${field};`);
+                    console.log(`${fieldName} column added to TournamentRegistrations`);
+                }
+            }
+        } catch (error) {
+            console.log('Error adding guest fields to TournamentRegistrations:', error.message);
+        }
+
+        // Add guest registration fields to EventRegistrations
+        try {
+            // Make user_id nullable for guest registrations
+            await db.query(`ALTER TABLE EventRegistrations MODIFY COLUMN user_id INT NULL;`);
+
+            // Add guest fields if they don't exist
+            const guestFields = [
+                'guest_name VARCHAR(255) NULL',
+                'guest_email VARCHAR(255) NULL',
+                'guest_phone VARCHAR(20) NULL',
+                'is_guest_registration BOOLEAN DEFAULT FALSE',
+                'registration_reference VARCHAR(50) UNIQUE NULL'
+            ];
+
+            for (const field of guestFields) {
+                const fieldName = field.split(' ')[0];
+                const [columns] = await db.query(`SHOW COLUMNS FROM EventRegistrations LIKE '${fieldName}';`);
+                if (columns.length === 0) {
+                    await db.query(`ALTER TABLE EventRegistrations ADD COLUMN ${field};`);
+                    console.log(`${fieldName} column added to EventRegistrations`);
+                }
+            }
+        } catch (error) {
+            console.log('Error adding guest fields to EventRegistrations:', error.message);
         }
 
         // Products
@@ -240,20 +349,29 @@ const createTables = async () => {
             );`
         );
         
-        // Orders
+        // Orders (Enhanced for guest orders)
         await db.query(`
             CREATE TABLE IF NOT EXISTS Orders (
                 order_id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT,
+                user_id INT NULL, -- Allow NULL for guest orders
                 total_amount DECIMAL(10, 2) NOT NULL,
                 shipping_cost DECIMAL(10, 2) NOT NULL,
                 status ENUM('pending', 'processing', 'shipped', 'delivered') DEFAULT 'pending',
                 payment_method ENUM('cod', 'online') DEFAULT 'cod', -- Payment method
                 payment_status ENUM('pending', 'completed', 'failed') DEFAULT 'pending', -- Payment status
                 shipping_address_id INT, -- Foreign key to ShippingAddresses table
+                -- Guest order fields
+                guest_name VARCHAR(255) NULL,
+                guest_email VARCHAR(255) NULL,
+                guest_phone VARCHAR(20) NULL,
+                is_guest_order BOOLEAN DEFAULT FALSE,
+                order_reference VARCHAR(50) UNIQUE NULL, -- Unique reference for guest orders
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES Users(user_id),
-                FOREIGN KEY (shipping_address_id) REFERENCES ShippingAddresses(shipping_address_id)
+                FOREIGN KEY (shipping_address_id) REFERENCES ShippingAddresses(shipping_address_id),
+                INDEX idx_guest_email (guest_email),
+                INDEX idx_order_reference (order_reference)
             );`
         );
 
@@ -321,9 +439,9 @@ const createTables = async () => {
             
         CREATE TABLE IF NOT EXISTS Payments (
             payment_id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT NOT NULL, -- User making the payment
-            entity_type ENUM('gift_card', 'order', 'booking', 'ticket') NOT NULL, -- Type of entity being paid for
-            entity_id INT NOT NULL, -- ID of the entity (e.g., gift_card_id, order_id, etc.)
+            user_id INT NULL, -- User making the payment (NULL for guest payments)
+            entity_type ENUM('gift_card', 'order', 'booking', 'ticket', 'tournament', 'event') NOT NULL, -- Type of entity being paid for
+            entity_id INT NOT NULL, -- ID of the entity (e.g., gift_card_id, order_id, tournament_id, event_id, etc.)
             payment_intent_id VARCHAR(255) NULL, -- Stripe Payment Intent ID
             checkout_session_id VARCHAR(255) NULL, -- Stripe Checkout Session ID
             amount DECIMAL(10, 2) NOT NULL, -- Amount paid
@@ -331,6 +449,7 @@ const createTables = async () => {
             status ENUM('pending', 'succeeded', 'failed', 'expired') DEFAULT 'pending',
             connected_account_id VARCHAR(255) NULL, -- Stripe connected account ID if applicable
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
             INDEX (connected_account_id)
         );`
@@ -384,20 +503,31 @@ const createTables = async () => {
             );`
         )
 
-        //Cart Table
+        //Cart Table (Enhanced for guest carts)
         await db.query(`
             CREATE TABLE IF NOT EXISTS Cart (
                 cart_id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
+                user_id INT NULL, -- Allow NULL for guest carts
                 product_id INT,
                 tournament_id INT,
+                event_id INT,
                 quantity INT NOT NULL DEFAULT 1,
-                item_type ENUM('product', 'tournament') DEFAULT 'product',
+                item_type ENUM('product', 'tournament', 'event') DEFAULT 'product',
                 payment_option ENUM('online', 'at_event') DEFAULT 'online',
+                -- Guest cart fields
+                guest_session_id VARCHAR(255) NULL, -- Session ID for guest carts
+                is_guest_cart BOOLEAN DEFAULT FALSE,
+                guest_name VARCHAR(255) NULL,
+                guest_email VARCHAR(255) NULL,
+                guest_phone VARCHAR(20) NULL,
                 createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES Products(product_id) ON DELETE CASCADE,
-                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id) ON DELETE CASCADE
+                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id) ON DELETE CASCADE,
+                FOREIGN KEY (event_id) REFERENCES Events(event_id) ON DELETE CASCADE,
+                INDEX idx_guest_session (guest_session_id),
+                INDEX idx_user_cart (user_id, item_type)
             );`
         );
         
@@ -437,6 +567,39 @@ const createTables = async () => {
             console.log('Error adding tournament_id column to Cart:', error.message);
         }
 
+        // Add event_id column to Cart if it doesn't exist
+        try {
+            // Check if column exists first
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM Cart LIKE 'event_id';
+            `);
+
+            if (columns.length === 0) {
+                // Add the column
+                await db.query(`
+                    ALTER TABLE Cart
+                    ADD COLUMN event_id INT NULL AFTER tournament_id;
+                `);
+
+                // Add the foreign-key constraint separately to avoid errors if FK exists
+                await db.query(`
+                    ALTER TABLE Cart
+                    ADD CONSTRAINT fk_cart_event FOREIGN KEY (event_id) REFERENCES Events(event_id) ON DELETE CASCADE;
+                `);
+                console.log('event_id column added to Cart successfully');
+            }
+        } catch (error) {
+            console.log('Error adding event_id column to Cart:', error.message);
+        }
+
+        // Update item_type enum to include 'event' if it doesn't already
+        try {
+            await db.query(`ALTER TABLE Cart MODIFY COLUMN item_type ENUM('product', 'tournament', 'event') DEFAULT 'product'`);
+            console.log('Cart item_type column updated to include event');
+        } catch (error) {
+            console.log('Error updating Cart item_type column:', error.message);
+        }
+
         // Add payment_option column to Cart if it doesn't exist
         try {
             // Check if column exists first
@@ -472,7 +635,7 @@ const createTables = async () => {
             CREATE TABLE IF NOT EXISTS Notifications (
                 notification_id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
-                type ENUM('booking_confirmation', 'purchase_confirmation', 'tournament_confirmation', 'reminder', 'special_offer', 'booking_cancellation', 'updation') NOT NULL,
+                type ENUM('booking_confirmation', 'purchase_confirmation', 'tournament_confirmation', 'event_confirmation', 'reminder', 'special_offer', 'booking_cancellation', 'updation') NOT NULL,
                 subject VARCHAR(255) NOT NULL,
                 message TEXT NOT NULL,
                 is_read BOOLEAN DEFAULT FALSE,
@@ -491,7 +654,7 @@ const createTables = async () => {
             CREATE TABLE IF NOT EXISTS Reviews (
                 review_id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
-                entity_type ENUM('VR_SESSION', 'PRODUCT', 'TOURNAMENT') NOT NULL, -- Add more types as needed
+                entity_type ENUM('VR_SESSION', 'PRODUCT', 'TOURNAMENT', 'EVENT') NOT NULL, -- Add more types as needed
                 entity_id INT NOT NULL, -- This will store the ID of the entity being reviewed (e.g., product_id, tournament_id, etc.)
                 rating INT CHECK (rating >= 1 AND rating <= 5), -- Assuming a 5-star rating system
                 comment TEXT,

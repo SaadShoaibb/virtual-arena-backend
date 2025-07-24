@@ -14,9 +14,35 @@ const createOrderWithItems = async (req, res) => {
     // Make sure we have the correct user_id from the authenticated user
     const user_id = req.user.user_id || req.user.id; // Support both formats for backward compatibility
 
-    // Validate required fields
-    if (!user_id || !total_amount || !shipping_cost || !items || !Array.isArray(items) || items.length === 0 || !shipping_address) {
-        return res.status(400).json({ success: false, message: 'Missing or invalid fields' });
+    // Validate required fields with detailed error messages
+    console.log('Create order request data:', { user_id, total_amount, shipping_cost, items, shipping_address, payment_method, payment_status });
+
+    if (!user_id) {
+        console.log('Missing user_id');
+        return res.status(400).json({ success: false, message: 'Missing user_id' });
+    }
+    if (!total_amount) {
+        console.log('Missing total_amount');
+        return res.status(400).json({ success: false, message: 'Missing total_amount' });
+    }
+    if (shipping_cost === undefined || shipping_cost === null) {
+        console.log('Missing shipping_cost');
+        return res.status(400).json({ success: false, message: 'Missing shipping_cost' });
+    }
+    if (!items || !Array.isArray(items) || items.length === 0) {
+        console.log('Missing or invalid items');
+        return res.status(400).json({ success: false, message: 'Missing or invalid items' });
+    }
+    if (!shipping_address) {
+        console.log('Missing shipping_address');
+        return res.status(400).json({ success: false, message: 'Missing shipping_address' });
+    }
+
+    // Validate shipping address fields before starting transaction
+    const { full_name, address, city, state, zip_code, country } = shipping_address;
+    if (!full_name || !address || !city || !state || !zip_code || !country) {
+        console.log('Missing shipping address fields:', { full_name, address, city, state, zip_code, country });
+        return res.status(400).json({ success: false, message: 'Missing required shipping address fields' });
     }
 
     try {
@@ -24,9 +50,9 @@ const createOrderWithItems = async (req, res) => {
         await db.query('START TRANSACTION');
 
         // Step 1: Create the shipping address
-        const { full_name, address, city, state, zip_code, country } = shipping_address;
+
         const [addressResult] = await db.query(
-            `INSERT INTO ShippingAddresses (user_id, full_name, address, city, state, zip_code, country) 
+            `INSERT INTO ShippingAddresses (user_id, full_name, address, city, state, zip_code, country)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [user_id, full_name, address, city, state, zip_code, country]
         );
@@ -40,11 +66,12 @@ const createOrderWithItems = async (req, res) => {
         );
         const orderId = orderResult.insertId;
 
-        // Step 3: Add order items and process tournament registrations if payment is complete
+        // Step 3: Add order items and process tournament/event registrations if payment is complete
         const tournamentRegistrations = [];
+        const eventRegistrations = [];
 
         for (const item of items) {
-            const { product_id, tournament_id, quantity, price, item_type, payment_option } = item;
+            const { product_id, tournament_id, event_id, quantity, price, item_type, payment_option } = item;
 
             if (item_type === 'tournament') {
                 // Handle tournament item
@@ -69,6 +96,29 @@ const createOrderWithItems = async (req, res) => {
                         payment_option: payment_option || 'online' // Default to online if not specified
                     });
                 }
+            } else if (item_type === 'event') {
+                // Handle event item
+                if (!event_id || !quantity || !price) {
+                    // Rollback the transaction if any item is invalid
+                    await db.query('ROLLBACK');
+                    return res.status(400).json({ success: false, message: 'Invalid event item data' });
+                }
+
+                // Insert the order item for event
+                await db.query(
+                    `INSERT INTO OrderItems (order_id, event_id, quantity, price, item_type)
+                     VALUES (?, ?, ?, ?, 'event')`,
+                    [orderId, event_id, quantity, price]
+                );
+
+                // If payment is complete, add to event registrations to process later
+                if (payment_status === 'completed') {
+                    eventRegistrations.push({
+                        event_id,
+                        user_id,
+                        payment_option: payment_option || 'online' // Default to online if not specified
+                    });
+                }
             } else {
                 // Handle regular product item
                 if (!product_id || !quantity || !price) {
@@ -86,12 +136,13 @@ const createOrderWithItems = async (req, res) => {
             }
         }
 
-        // Step 4: Process tournament registrations if payment is complete
+        // Step 4: Process tournament and event registrations if payment is complete
         if (payment_status === 'completed') {
+            // Process tournament registrations
             for (const registration of tournamentRegistrations) {
                 // Register the user for the tournament
                 await db.query(
-                    `INSERT INTO TournamentRegistrations (user_id, tournament_id, status, payment_status, payment_option) 
+                    `INSERT INTO TournamentRegistrations (user_id, tournament_id, status, payment_status, payment_option)
                      VALUES (?, ?, 'registered', 'paid', ?)`,
                     [registration.user_id, registration.tournament_id, registration.payment_option || 'online']
                 );
@@ -119,6 +170,42 @@ const createOrderWithItems = async (req, res) => {
                 pusher.trigger('my-channel', 'my-event', {
                     message: 'Registered For tournament',
                     tournamentId: registration.tournament_id,
+                    userId: user_id
+                });
+            }
+
+            // Process event registrations
+            for (const registration of eventRegistrations) {
+                // Register the user for the event
+                await db.query(
+                    `INSERT INTO EventRegistrations (user_id, event_id, status, payment_status, payment_option)
+                     VALUES (?, ?, 'registered', 'paid', ?)`,
+                    [registration.user_id, registration.event_id, registration.payment_option || 'online']
+                );
+
+                // Send notification for event registration
+                await sendNotification(
+                    user_id,
+                    'booking_confirmation',
+                    'Event Registration',
+                    'You have been registered for the event.',
+                    'email',
+                    `/events?event_id=${registration.event_id}`
+                );
+
+                // Send notification to admin for event registration
+                await sendAdminNotification(
+                    'booking_confirmation',
+                    'Event Registration',
+                    `A new event registration has been made by user ${user_id}.`,
+                    'email',
+                    `/events/all-events?event_id=${registration.event_id}`
+                );
+
+                // Trigger Pusher event for event registration
+                pusher.trigger('my-channel', 'my-event', {
+                    message: 'Registered For event',
+                    eventId: registration.event_id,
                     userId: user_id
                 });
             }
@@ -153,7 +240,7 @@ const createOrderWithItems = async (req, res) => {
         // Commit the transaction
         await db.query('COMMIT');
 
-        res.status(201).json({ success: true, message: 'Order and items created successfully', orderId });
+        res.status(201).json({ success: true, message: 'Order and items created successfully', orderId, order_id: orderId });
     } catch (err) {
         // Rollback the transaction in case of an error
         await db.query('ROLLBACK');
@@ -557,7 +644,7 @@ const deleteGiftCard = async (req, res) => {
 const addToCart = async (req, res) => {
     // Make sure we have the correct user_id from the authenticated user
     const user_id = req.user.user_id || req.user.id; // Support both formats for backward compatibility
-    const { product_id, quantity, item_type, tournament_id, payment_option } = req.body; // Extract product_id, quantity, item_type, and payment_option from the request body
+    const { product_id, quantity, item_type, tournament_id, event_id, payment_option } = req.body; // Extract product_id, quantity, item_type, and payment_option from the request body
 
     try {
         // Validate request
@@ -676,6 +763,99 @@ const addToCart = async (req, res) => {
                 });
                 res.status(201).json({ success: true, message: 'Tournament ticket added to cart', cartId: result.insertId, payment_option: paymentOption });
             }
+        } else if (item_type === 'event') {
+            // Handle event items
+            console.log('Processing event item:', { user_id, event_id, quantity, payment_option });
+
+            // Validate event_id
+            if (!event_id) {
+                return res.status(400).json({ success: false, message: 'Event ID is required for event items' });
+            }
+
+            // Check if the event exists
+            const [eventExists] = await db.query(
+                `SELECT event_id, name, ticket_price FROM Events WHERE event_id = ?`,
+                [event_id]
+            );
+
+            if (eventExists.length === 0) {
+                return res.status(404).json({ success: false, message: 'Event not found' });
+            }
+
+            // Check if user is already registered for this event
+            const [existingRegistration] = await db.query(
+                `SELECT registration_id FROM EventRegistrations
+                 WHERE user_id = ? AND event_id = ? AND status != 'cancelled'`,
+                [user_id, event_id]
+            );
+
+            if (existingRegistration.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'You are already registered for this event'
+                });
+            }
+
+            // Set default payment option if not provided
+            const paymentOption = payment_option || 'online';
+
+            // If payment option is 'at_event', register the user directly
+            if (paymentOption === 'at_event') {
+                try {
+                    await db.query(
+                        `INSERT INTO EventRegistrations (user_id, event_id, payment_option, payment_status)
+                         VALUES (?, ?, 'at_event', 'paid')`,
+                        [user_id, event_id]
+                    );
+
+                    return res.status(201).json({
+                        success: true,
+                        message: 'You have been registered for the event. Payment will be collected at the event.'
+                    });
+                } catch (err) {
+                    console.error('Error registering for event:', err);
+                    return res.status(500).json({ success: false, message: 'Error registering for event', error: err.message });
+                }
+            }
+
+            // For online payment, proceed with cart addition
+            // Check if the event ticket already exists in the user's cart
+            const [existingCartItem] = await db.query(
+                `SELECT * FROM Cart
+                 WHERE user_id = ? AND event_id = ?`,
+                [user_id, event_id]
+            );
+
+            if (existingCartItem.length > 0) {
+                // If the event ticket already exists, update the quantity and payment_option
+                const newQuantity = existingCartItem[0].quantity + quantity;
+                await db.query(
+                    `UPDATE Cart
+                     SET quantity = ?, payment_option = ?
+                     WHERE user_id = ? AND event_id = ?`,
+                    [newQuantity, paymentOption, user_id, event_id]
+                );
+                res.status(200).json({ success: true, message: 'Event ticket quantity updated', newQuantity, payment_option: paymentOption });
+            } else {
+                // If the event ticket does not exist, insert a new row with payment_option
+                // Explicitly set product_id to NULL for event items
+                const [result] = await db.query(
+                    `INSERT INTO Cart (user_id, event_id, quantity, item_type, payment_option, product_id)
+                     VALUES (?, ?, ?, 'event', ?, NULL)`,
+                    [user_id, event_id, quantity, paymentOption]
+                );
+
+                // Log successful insertion for debugging
+                console.log('Event added to cart successfully:', {
+                    user_id,
+                    event_id,
+                    quantity,
+                    item_type: 'event',
+                    payment_option: paymentOption,
+                    cart_id: result.insertId
+                });
+                res.status(201).json({ success: true, message: 'Event ticket added to cart', cartId: result.insertId, payment_option: paymentOption });
+            }
         } else {
             // Handle regular product as cart item
             // Check if the product already exists in the user's cart
@@ -732,16 +912,39 @@ const getCartByUserId = async (req, res) => {
 
         // Get tournament items from cart
         const [tournamentItems] = await db.query(
-            `SELECT 
-                c.*, 
-                t.name, 
-                t.ticket_price AS discount_price, 
+            `SELECT
+                c.*,
+                t.name,
+                t.ticket_price AS discount_price,
                 '/images/tournament.jpg' AS images, -- Default image for tournaments
                 'tournament' AS item_type,
-                IFNULL(c.payment_option, 'online') AS payment_option
-             FROM Cart c 
-             JOIN Tournaments t ON c.tournament_id = t.tournament_id 
+                IFNULL(c.payment_option, 'online') AS payment_option,
+                t.rules,
+                t.requirements,
+                t.description,
+                t.start_date,
+                t.end_date,
+                t.game_type,
+                t.prize_pool
+             FROM Cart c
+             JOIN Tournaments t ON c.tournament_id = t.tournament_id
              WHERE c.user_id = ? AND c.item_type = 'tournament'
+             GROUP BY c.cart_id`, // Group by cart item to avoid duplicates
+            [user_id]
+        );
+
+        // Get event items from cart
+        const [eventItems] = await db.query(
+            `SELECT
+                c.*,
+                e.name,
+                e.ticket_price AS discount_price,
+                '/images/event.jpg' AS images, -- Default image for events
+                'event' AS item_type,
+                IFNULL(c.payment_option, 'online') AS payment_option
+             FROM Cart c
+             JOIN Events e ON c.event_id = e.event_id
+             WHERE c.user_id = ? AND c.item_type = 'event'
              GROUP BY c.cart_id`, // Group by cart item to avoid duplicates
             [user_id]
         );
@@ -758,8 +961,14 @@ const getCartByUserId = async (req, res) => {
             images: [item.images], // Make it an array for consistency
         }));
 
-        // Combine both types of items
-        const allCartItems = [...formattedProductItems, ...formattedTournamentItems];
+        // Format the event items images field as an array
+        const formattedEventItems = eventItems.map((item) => ({
+            ...item,
+            images: [item.images], // Make it an array for consistency
+        }));
+
+        // Combine all types of items
+        const allCartItems = [...formattedProductItems, ...formattedTournamentItems, ...formattedEventItems];
 
         res.status(200).json(allCartItems);
     } catch (err) {
@@ -795,6 +1004,141 @@ const removeFromCart = async (req, res) => {
     }
 };
 
+// ✅ Add item to guest cart
+const addToGuestCart = async (req, res) => {
+    try {
+        const {
+            guest_session_id,
+            product_id,
+            tournament_id,
+            event_id,
+            quantity,
+            item_type,
+            guest_name,
+            guest_email,
+            guest_phone
+        } = req.body;
+
+        if (!guest_session_id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Guest session ID is required'
+            });
+        }
+
+        // Check if item already exists in guest cart
+        let existingCartQuery = `
+            SELECT * FROM Cart
+            WHERE guest_session_id = ? AND item_type = ? AND is_guest_cart = TRUE
+        `;
+        let queryParams = [guest_session_id, item_type];
+
+        if (item_type === 'product') {
+            existingCartQuery += ' AND product_id = ?';
+            queryParams.push(product_id);
+        } else if (item_type === 'tournament') {
+            existingCartQuery += ' AND tournament_id = ?';
+            queryParams.push(tournament_id);
+        } else if (item_type === 'event') {
+            existingCartQuery += ' AND event_id = ?';
+            queryParams.push(event_id);
+        }
+
+        const [existingItems] = await db.query(existingCartQuery, queryParams);
+
+        if (existingItems.length > 0) {
+            // Update quantity if item exists
+            const newQuantity = existingItems[0].quantity + (quantity || 1);
+            await db.query(
+                'UPDATE Cart SET quantity = ?, guest_name = ?, guest_email = ?, guest_phone = ? WHERE cart_id = ?',
+                [newQuantity, guest_name, guest_email, guest_phone, existingItems[0].cart_id]
+            );
+
+            return res.status(200).json({
+                success: true,
+                message: 'Guest cart updated successfully',
+                cart_id: existingItems[0].cart_id
+            });
+        } else {
+            // Add new item to guest cart
+            const [result] = await db.query(
+                `INSERT INTO Cart (
+                    guest_session_id, product_id, tournament_id, event_id,
+                    quantity, item_type, is_guest_cart,
+                    guest_name, guest_email, guest_phone
+                ) VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?)`,
+                [guest_session_id, product_id, tournament_id, event_id, quantity || 1, item_type, guest_name, guest_email, guest_phone]
+            );
+
+            return res.status(201).json({
+                success: true,
+                message: 'Item added to guest cart successfully',
+                cart_id: result.insertId
+            });
+        }
+    } catch (error) {
+        console.error('Error adding to guest cart:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error adding item to guest cart',
+            error: error.message
+        });
+    }
+};
+
+// ✅ Get guest cart by session ID
+const getGuestCart = async (req, res) => {
+    try {
+        const { guest_session_id } = req.params;
+
+        const [cartItems] = await db.query(`
+            SELECT
+                c.*,
+                p.name as product_name,
+                p.price as product_price,
+                p.image_url as product_image,
+                t.name as tournament_name,
+                t.ticket_price as tournament_price,
+                e.name as event_name,
+                e.ticket_price as event_price
+            FROM Cart c
+            LEFT JOIN Products p ON c.product_id = p.product_id
+            LEFT JOIN Tournaments t ON c.tournament_id = t.tournament_id
+            LEFT JOIN Events e ON c.event_id = e.event_id
+            WHERE c.guest_session_id = ? AND c.is_guest_cart = TRUE
+            ORDER BY c.createdAt DESC
+        `, [guest_session_id]);
+
+        // Calculate total
+        let total = 0;
+        cartItems.forEach(item => {
+            let itemPrice = 0;
+            if (item.item_type === 'product') {
+                itemPrice = item.product_price;
+            } else if (item.item_type === 'tournament') {
+                itemPrice = item.tournament_price;
+            } else if (item.item_type === 'event') {
+                itemPrice = item.event_price;
+            }
+            total += itemPrice * item.quantity;
+        });
+
+        res.status(200).json({
+            success: true,
+            cart: cartItems,
+            total: total.toFixed(2),
+            item_count: cartItems.length
+        });
+    } catch (error) {
+        console.error('Error fetching guest cart:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching guest cart',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     createOrderWithItems,
     getAllOrders,
@@ -811,5 +1155,7 @@ module.exports = {
     getCartByUserId,
     updateCartItemQuantity,
     removeFromCart,
-    getUserOrders
+    getUserOrders,
+    addToGuestCart,
+    getGuestCart
 }
