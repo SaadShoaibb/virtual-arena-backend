@@ -288,27 +288,77 @@ const registerForEvent = async (req, res) => {
     }
 };
 
-// Get all event registrations (admin)
+// Get all event registrations (admin) - includes both user and guest registrations
 const getAllEventRegistrations = async (req, res) => {
     try {
-        const [registrations] = await db.query(`
-            SELECT er.*, e.name as event_name, u.name as user_name, u.email as user_email
-            FROM EventRegistrations er
-            JOIN Events e ON er.event_id = e.event_id
-            JOIN Users u ON er.user_id = u.user_id
-            ORDER BY er.registration_date DESC
-        `);
+        console.log('Fetching event registrations...');
+
+        // First, check if guest columns exist
+        const [columns] = await db.query('DESCRIBE EventRegistrations');
+        const hasGuestColumns = columns.some(col => col.Field === 'guest_name');
+
+        let query;
+        if (hasGuestColumns) {
+            // Use full query with guest support
+            query = `
+                SELECT
+                    er.*,
+                    e.name as event_name,
+                    e.ticket_price,
+                    CASE
+                        WHEN er.is_guest_registration = TRUE THEN er.guest_name
+                        ELSE u.name
+                    END as registrant_name,
+                    CASE
+                        WHEN er.is_guest_registration = TRUE THEN er.guest_email
+                        ELSE u.email
+                    END as registrant_email,
+                    CASE
+                        WHEN er.is_guest_registration = TRUE THEN er.guest_phone
+                        ELSE u.phone
+                    END as registrant_phone,
+                    CASE
+                        WHEN er.is_guest_registration = TRUE THEN 'Guest'
+                        ELSE 'Registered User'
+                    END as registration_type
+                FROM EventRegistrations er
+                JOIN Events e ON er.event_id = e.event_id
+                LEFT JOIN Users u ON er.user_id = u.user_id
+                ORDER BY er.registration_id DESC
+            `;
+        } else {
+            // Fallback query without guest columns
+            console.log('⚠️ Guest columns not found, using fallback query');
+            query = `
+                SELECT
+                    er.*,
+                    e.name as event_name,
+                    e.ticket_price,
+                    u.name as registrant_name,
+                    u.email as registrant_email,
+                    u.phone as registrant_phone,
+                    'Registered User' as registration_type
+                FROM EventRegistrations er
+                JOIN Events e ON er.event_id = e.event_id
+                LEFT JOIN Users u ON er.user_id = u.user_id
+                ORDER BY er.registration_id DESC
+            `;
+        }
+
+        const [registrations] = await db.query(query);
+        console.log(`✅ Found ${registrations.length} event registrations`);
 
         res.status(200).json({
             success: true,
             registrations,
         });
     } catch (error) {
-        console.error(error);
+        console.error('❌ Error fetching event registrations:', error.message);
+        console.error('❌ Full error:', error);
         res.status(500).json({
             success: false,
             message: 'Error fetching event registrations',
-            error,
+            error: error.message,
         });
     }
 };
@@ -437,6 +487,97 @@ const deleteEventRegistration = async (req, res) => {
     }
 };
 
+// Guest event registration
+const registerForEventGuest = async (req, res) => {
+    try {
+        const { event_id } = req.params;
+        const {
+            guest_name,
+            guest_email,
+            guest_phone,
+            payment_option = 'online'
+        } = req.body;
+
+        // Validate required fields
+        if (!guest_name || !guest_email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields: guest_name, guest_email',
+            });
+        }
+
+        // Check if event exists and is upcoming
+        const [events] = await db.query(`
+            SELECT * FROM Events WHERE event_id = ? AND status = 'upcoming'
+        `, [event_id]);
+
+        if (events.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Event not found or not available for registration',
+            });
+        }
+
+        const event = events[0];
+
+        // Check if event is full
+        if (event.max_participants) {
+            const [registrationCount] = await db.query(`
+                SELECT COUNT(*) as count FROM EventRegistrations
+                WHERE event_id = ? AND status != 'cancelled'
+            `, [event_id]);
+
+            if (registrationCount[0].count >= event.max_participants) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Event is full',
+                });
+            }
+        }
+
+        // Generate registration reference
+        const registration_reference = `EREG-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+        // Register guest for event
+        const [result] = await db.query(`
+            INSERT INTO EventRegistrations (
+                event_id, guest_name, guest_email, guest_phone,
+                is_guest_registration, registration_reference, payment_option, payment_status
+            ) VALUES (?, ?, ?, ?, TRUE, ?, ?, ?)
+        `, [
+            event_id,
+            guest_name,
+            guest_email,
+            guest_phone,
+            registration_reference,
+            payment_option,
+            payment_option === 'online' ? 'pending' : 'paid'
+        ]);
+
+        res.status(201).json({
+            success: true,
+            message: 'Guest event registration successful',
+            registration: {
+                registration_id: result.insertId,
+                registration_reference,
+                event_id,
+                guest_name,
+                guest_email,
+                payment_option,
+                payment_status: payment_option === 'online' ? 'pending' : 'paid'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in guest event registration:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error during guest event registration',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     addEvent,
     getAllEvents,
@@ -444,6 +585,7 @@ module.exports = {
     updateEvent,
     deleteEvent,
     registerForEvent,
+    registerForEventGuest,
     getAllEventRegistrations,
     getUserEventRegistrations,
     getEventRegistrationById,

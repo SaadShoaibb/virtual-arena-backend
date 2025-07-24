@@ -30,6 +30,46 @@ router.get('/payment-details', isAuthenticated, paymentController.getAllPayments
 router.get('/payment-details/:paymentId', isAuthenticated, paymentController.getPaymentDetails);
 
 /**
+ * Manual payment status update route - requires authentication
+ * This is for admin/testing purposes
+ */
+router.put('/update-payment-status', isAuthenticated, paymentController.updatePaymentStatus);
+
+/**
+ * Debug route to check order payment status
+ */
+router.get('/debug-order/:order_id', async (req, res) => {
+  try {
+    const { order_id } = req.params;
+    const db = require('../config/db');
+
+    // Get order details
+    const [orderResult] = await db.query(
+      'SELECT order_id, payment_status, payment_method, total_amount, guest_name, guest_email FROM Orders WHERE order_id = ?',
+      [order_id]
+    );
+
+    // Get payment records
+    const [paymentResult] = await db.query(
+      'SELECT payment_id, status, checkout_session_id, entity_type, entity_id FROM Payments WHERE entity_id = ? AND entity_type = "order"',
+      [order_id]
+    );
+
+    res.json({
+      success: true,
+      order: orderResult[0] || null,
+      payments: paymentResult,
+      message: `Debug info for order ${order_id}`
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * Test route to verify backend routing
  */
 router.get('/test', (req, res) => {

@@ -309,22 +309,74 @@ const registerForTournament = async (req, res) => {
 // Get all tournament registrations
 const getAllRegistrations = async (req, res) => {
     try {
-        // Query to fetch all registrations with user and tournament details
-        const [registrations] = await db.query(`
-            SELECT 
-                r.*, 
-                u.name AS user_name, 
-                t.name AS tournament_name,
-                t.status AS tournament_status,
-                r.payment_status,
-                r.payment_option
-            FROM 
-                TournamentRegistrations r
-            JOIN 
-                Users u ON r.user_id = u.user_id
-            JOIN 
-                Tournaments t ON r.tournament_id = t.tournament_id
-        `);
+        console.log('Fetching tournament registrations...');
+
+        // First, check if guest columns exist
+        const [columns] = await db.query('DESCRIBE TournamentRegistrations');
+        const hasGuestColumns = columns.some(col => col.Field === 'guest_name');
+
+        let query;
+        if (hasGuestColumns) {
+            // Use full query with guest support
+            query = `
+                SELECT
+                    r.*,
+                    t.name AS tournament_name,
+                    t.status AS tournament_status,
+                    t.ticket_price,
+                    CASE
+                        WHEN r.is_guest_registration = TRUE THEN r.guest_name
+                        ELSE u.name
+                    END as registrant_name,
+                    CASE
+                        WHEN r.is_guest_registration = TRUE THEN r.guest_email
+                        ELSE u.email
+                    END as registrant_email,
+                    CASE
+                        WHEN r.is_guest_registration = TRUE THEN r.guest_phone
+                        ELSE u.phone
+                    END as registrant_phone,
+                    CASE
+                        WHEN r.is_guest_registration = TRUE THEN 'Guest'
+                        ELSE 'Registered User'
+                    END as registration_type,
+                    r.payment_status,
+                    r.payment_option
+                FROM
+                    TournamentRegistrations r
+                JOIN
+                    Tournaments t ON r.tournament_id = t.tournament_id
+                LEFT JOIN
+                    Users u ON r.user_id = u.user_id
+                ORDER BY r.registration_id DESC
+            `;
+        } else {
+            // Fallback query without guest columns
+            console.log('⚠️ Guest columns not found, using fallback query');
+            query = `
+                SELECT
+                    r.*,
+                    t.name AS tournament_name,
+                    t.status AS tournament_status,
+                    t.ticket_price,
+                    u.name as registrant_name,
+                    u.email as registrant_email,
+                    u.phone as registrant_phone,
+                    'Registered User' as registration_type,
+                    r.payment_status,
+                    r.payment_option
+                FROM
+                    TournamentRegistrations r
+                JOIN
+                    Tournaments t ON r.tournament_id = t.tournament_id
+                LEFT JOIN
+                    Users u ON r.user_id = u.user_id
+                ORDER BY r.registration_id DESC
+            `;
+        }
+
+        const [registrations] = await db.query(query);
+        console.log(`✅ Found ${registrations.length} tournament registrations`);
 
         // Send success response
         res.status(200).json({
@@ -333,10 +385,11 @@ const getAllRegistrations = async (req, res) => {
             registrations,
         });
     } catch (error) {
-        console.error('Error fetching registrations:', error.message);
+        console.error('❌ Error fetching tournament registrations:', error.message);
+        console.error('❌ Full error:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching registrations',
+            message: 'Error fetching tournament registrations',
             error: error.message,
         });
     }
@@ -508,6 +561,97 @@ const updateRegistration = async (req, res) => {
     }
 };
 
+// Guest tournament registration
+const registerForTournamentGuest = async (req, res) => {
+    try {
+        const {
+            tournament_id,
+            guest_name,
+            guest_email,
+            guest_phone,
+            payment_option = 'online'
+        } = req.body;
+
+        // Validate required fields
+        if (!tournament_id || !guest_name || !guest_email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields: tournament_id, guest_name, guest_email',
+            });
+        }
+
+        // Check if tournament exists and is upcoming
+        const [tournaments] = await db.query(`
+            SELECT * FROM Tournaments WHERE tournament_id = ? AND status = 'upcoming'
+        `, [tournament_id]);
+
+        if (tournaments.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Tournament not found or not available for registration',
+            });
+        }
+
+        const tournament = tournaments[0];
+
+        // Check if tournament is full
+        if (tournament.max_participants) {
+            const [registrationCount] = await db.query(`
+                SELECT COUNT(*) as count FROM TournamentRegistrations
+                WHERE tournament_id = ? AND status != 'cancelled'
+            `, [tournament_id]);
+
+            if (registrationCount[0].count >= tournament.max_participants) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Tournament is full',
+                });
+            }
+        }
+
+        // Generate registration reference
+        const registration_reference = `TREG-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+        // Register guest for tournament
+        const [result] = await db.query(`
+            INSERT INTO TournamentRegistrations (
+                tournament_id, guest_name, guest_email, guest_phone,
+                is_guest_registration, registration_reference, payment_option, payment_status
+            ) VALUES (?, ?, ?, ?, TRUE, ?, ?, ?)
+        `, [
+            tournament_id,
+            guest_name,
+            guest_email,
+            guest_phone,
+            registration_reference,
+            payment_option,
+            payment_option === 'online' ? 'pending' : 'paid'
+        ]);
+
+        res.status(201).json({
+            success: true,
+            message: 'Guest tournament registration successful',
+            registration: {
+                registration_id: result.insertId,
+                registration_reference,
+                tournament_id,
+                guest_name,
+                guest_email,
+                payment_option,
+                payment_status: payment_option === 'online' ? 'pending' : 'paid'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in guest tournament registration:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error during guest tournament registration',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     addTournament,
     getAllTournaments,
@@ -515,6 +659,7 @@ module.exports = {
     updateTournament,
     deleteTournament,
     registerForTournament,
+    registerForTournamentGuest,
     getAllRegistrations,
     getUserRegistrations,
     getRegistrationById,

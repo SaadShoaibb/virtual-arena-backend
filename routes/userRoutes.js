@@ -2,10 +2,10 @@ const express = require('express')
 const isAuthenticated = require('../middlewares/authMiddleware')
 const {  getCarts, deleteMultipleCarts, getOneDeal, getDeals } = require('../controllers/dealsController')
 const { createBooking, getBookingById, cancelBooking, getAllUserBookings, updateBooking, getBookingAvailability, createGuestBooking, getGuestBooking } = require('../controllers/bookingController')
-const {  getRegistrationById, getUserRegistrations, registerForTournament, getAllTournaments } = require('../controllers/tournamentController')
-const { getAllEvents, getEventById, registerForEvent, getUserEventRegistrations } = require('../controllers/eventsController')
+const {  getRegistrationById, getUserRegistrations, registerForTournament, registerForTournamentGuest, getAllTournaments } = require('../controllers/tournamentController')
+const { getAllEvents, getEventById, registerForEvent, registerForEventGuest, getUserEventRegistrations } = require('../controllers/eventsController')
 const { getAllProducts, getProductById } = require('../controllers/productController')
-const { createOrderWithItems, getOrderById, getOrdersByUserId, addToCart, getCartByUserId, updateCartItemQuantity, removeFromCart, getUserOrders, addToGuestCart, getGuestCart } = require('../controllers/orderController')
+const { createOrderWithItems, getOrderById, getOrdersByUserId, addToCart, getCartByUserId, updateCartItemQuantity, removeFromCart, getUserOrders, addToGuestCart, getGuestCart, createGuestOrder, getGuestOrders } = require('../controllers/orderController')
 const { getAllSessions } = require('../controllers/sessionsController')
 const { getWishlistProducts, addToWishlist, removeFromWishlist, getUserAddress, updateUserAddress } = require('../controllers/authController')
 const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead } = require('../controllers/notificationController')
@@ -30,15 +30,42 @@ router.get('/booking-availability', getBookingAvailability) // Public route for 
 router.post('/guest-booking', createGuestBooking) // Public route for guest bookings
 router.get('/guest-booking/:booking_reference', getGuestBooking) // Public route to check guest booking
 
+// Guest Orders (Public routes)
+router.post('/guest-order', createGuestOrder) // Public route for guest orders
+router.get('/guest-orders', getGuestOrders) // Public route to get guest orders by email
+
+// Debug route to check Orders table structure
+router.get('/debug-orders-table', async (req, res) => {
+    try {
+        const db = require('../config/db');
+        const [columns] = await db.query('SHOW COLUMNS FROM Orders');
+        const [sampleOrders] = await db.query('SELECT * FROM Orders WHERE is_guest_order = true LIMIT 3');
+
+        res.json({
+            success: true,
+            columns: columns,
+            sampleOrders: sampleOrders,
+            message: 'Orders table debug info'
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 // Events
 router.get('/get-events',getAllEvents)
 router.get('/get-event/:event_id',getEventById)
 router.post('/register-for-event/:event_id',isAuthenticated,registerForEvent)
+router.post('/guest-event-registration/:event_id', registerForEventGuest) // Guest event registration
 router.get('/event-registrations/',isAuthenticated,getUserEventRegistrations)
 
 // Tournament Registrations
 router.get('/get-tournaments',getAllTournaments)
 router.post('/register-for-tournament/',isAuthenticated,registerForTournament)
+router.post('/guest-tournament-registration', registerForTournamentGuest) // Guest tournament registration
 router.get('/tournament-registrations/',isAuthenticated,getUserRegistrations)
 router.get('/tournament-registration/:registration_id',isAuthenticated,getRegistrationById)
 

@@ -251,9 +251,9 @@ const createOrderWithItems = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
     try {
-        // Query to fetch all orders with user, item, and shipping address details
+        // Query to fetch all orders including guest orders with user, item, and shipping address details
         const [orders] = await db.query(`
-            SELECT 
+            SELECT
                 Orders.order_id,
                 Orders.total_amount,
                 Orders.status,
@@ -261,9 +261,17 @@ const getAllOrders = async (req, res) => {
                 Orders.payment_status,
                 Orders.shipping_cost,
                 Orders.created_at AS order_created_at,
+                -- Guest order fields
+                Orders.guest_name,
+                Orders.guest_email,
+                Orders.guest_phone,
+                Orders.is_guest_order,
+                Orders.order_reference,
+                -- User fields (NULL for guest orders)
                 Users.user_id,
                 Users.name AS user_name,
                 Users.email AS user_email,
+                -- Shipping address fields
                 ShippingAddresses.shipping_address_id,
                 ShippingAddresses.full_name AS shipping_full_name,
                 ShippingAddresses.address AS shipping_address,
@@ -271,9 +279,11 @@ const getAllOrders = async (req, res) => {
                 ShippingAddresses.state AS shipping_state,
                 ShippingAddresses.zip_code AS shipping_zip_code,
                 ShippingAddresses.country AS shipping_country,
+                -- Order items
                 OrderItems.order_item_id,
                 OrderItems.quantity,
                 OrderItems.price AS item_price,
+                -- Product details
                 Products.product_id,
                 Products.name AS product_name,
                 Products.description AS product_description,
@@ -286,8 +296,8 @@ const getAllOrders = async (req, res) => {
                 Products.stock,
                 Products.is_active
             FROM Orders
-            INNER JOIN Users ON Orders.user_id = Users.user_id
-            INNER JOIN ShippingAddresses ON Orders.shipping_address_id = ShippingAddresses.shipping_address_id
+            LEFT JOIN Users ON Orders.user_id = Users.user_id
+            LEFT JOIN ShippingAddresses ON Orders.shipping_address_id = ShippingAddresses.shipping_address_id
             INNER JOIN OrderItems ON Orders.order_id = OrderItems.order_id
             INNER JOIN Products ON OrderItems.product_id = Products.product_id
             ORDER BY Orders.created_at DESC;
@@ -303,16 +313,24 @@ const getAllOrders = async (req, res) => {
                     order_id: row.order_id,
                     total_amount: row.total_amount,
                     status: row.status,
-                    payment_method: row.payment_method, // Include payment method
+                    payment_method: row.payment_method || 'online', // Include payment method with fallback
                     payment_status: row.payment_status, // Include payment status
                     shipping_cost: row.shipping_cost, // Include shipping cost
                     created_at: row.order_created_at,
-                    user: {
+                    // Guest order fields
+                    is_guest_order: row.is_guest_order || false,
+                    guest_name: row.guest_name,
+                    guest_email: row.guest_email,
+                    guest_phone: row.guest_phone,
+                    order_reference: row.order_reference,
+                    // User data (will be null for guest orders)
+                    user: row.user_id ? {
                         user_id: row.user_id,
                         name: row.user_name,
                         email: row.user_email,
-                    },
-                    shipping_address: {
+                    } : null,
+                    // Shipping address (may be null for guest orders)
+                    shipping_address: row.shipping_address_id ? {
                         shipping_address_id: row.shipping_address_id,
                         full_name: row.shipping_full_name,
                         address: row.shipping_address,
@@ -320,7 +338,7 @@ const getAllOrders = async (req, res) => {
                         state: row.shipping_state,
                         zip_code: row.shipping_zip_code,
                         country: row.shipping_country,
-                    },
+                    } : null,
                     items: [],
                 };
             }
@@ -1139,6 +1157,225 @@ const getGuestCart = async (req, res) => {
     }
 };
 
+// Create guest order
+const createGuestOrder = async (req, res) => {
+    try {
+        const {
+            guest_name,
+            guest_email,
+            guest_phone,
+            items,
+            total_amount,
+            shipping_address,
+            shipping_cost = 0,
+            payment_method = 'online',
+            is_guest_order = true
+        } = req.body;
+
+        // Validate required fields
+        if (!guest_name || !guest_email || !items || !total_amount) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields: guest_name, guest_email, items, total_amount'
+            });
+        }
+
+        // Generate order reference
+        const order_reference = `GORD-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+        // Create the order with fallback for missing columns
+        let orderResult;
+        try {
+            // Set payment status based on payment method
+            const paymentStatus = payment_method === 'cod' ? 'cod' : 'pending';
+
+            // Try with all columns first (including shipping_cost and payment_method)
+            [orderResult] = await db.query(`
+                INSERT INTO Orders (
+                    guest_name, guest_email, guest_phone, total_amount,
+                    shipping_address, shipping_cost, is_guest_order, order_reference,
+                    status, payment_status, payment_method
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            `, [
+                guest_name,
+                guest_email,
+                guest_phone,
+                total_amount,
+                shipping_address || null,
+                shipping_cost || 0.00,
+                is_guest_order,
+                order_reference,
+                paymentStatus,
+                payment_method
+            ]);
+        } catch (error) {
+            if (error.code === 'ER_BAD_FIELD_ERROR') {
+                // Fallback: try with minimal columns
+                console.log('Some columns not found, using fallback...');
+                [orderResult] = await db.query(`
+                    INSERT INTO Orders (
+                        guest_name, guest_email, guest_phone, total_amount,
+                        is_guest_order, order_reference,
+                        status, payment_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 'pending')
+                `, [
+                    guest_name,
+                    guest_email,
+                    guest_phone,
+                    total_amount,
+                    is_guest_order,
+                    order_reference
+                ]);
+            } else {
+                throw error;
+            }
+        }
+
+        const order_id = orderResult.insertId;
+
+        // Add order items
+        for (const item of items) {
+            await db.query(`
+                INSERT INTO OrderItems (order_id, product_id, quantity, price)
+                VALUES (?, ?, ?, ?)
+            `, [order_id, item.product_id, item.quantity, item.price]);
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Guest order created successfully',
+            order: {
+                order_id,
+                order_reference,
+                guest_name,
+                guest_email,
+                total_amount,
+                status: 'pending',
+                payment_status: 'pending'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error creating guest order:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating guest order',
+            error: error.message
+        });
+    }
+};
+
+// Get guest orders by email
+const getGuestOrders = async (req, res) => {
+    try {
+        const { email } = req.query;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email is required'
+            });
+        }
+
+        console.log('🔍 Fetching guest orders for email:', email);
+
+        // First, check if any guest orders exist at all
+        const [allGuestOrders] = await db.query(`
+            SELECT COUNT(*) as total FROM Orders WHERE is_guest_order = true
+        `);
+        console.log('📊 Total guest orders in database:', allGuestOrders[0].total);
+
+        // Get guest orders with basic columns first
+        const [orders] = await db.query(`
+            SELECT
+                order_id,
+                guest_name,
+                guest_email,
+                guest_phone,
+                total_amount,
+                status,
+                payment_status,
+                order_reference,
+                created_at
+            FROM Orders
+            WHERE is_guest_order = true
+            AND guest_email = ?
+            ORDER BY created_at DESC
+        `, [email]);
+
+        console.log(`📦 Found ${orders.length} guest orders for email: ${email}`);
+
+        // Add missing fields with fallback values
+        for (let order of orders) {
+            // Add missing fields that might not exist in all databases
+            order.shipping_cost = 0;
+            order.shipping_address = '';
+            order.payment_method = 'online';
+
+            // Get additional fields if they exist
+            try {
+                const [additionalFields] = await db.query(`
+                    SELECT shipping_cost, shipping_address, payment_method
+                    FROM Orders
+                    WHERE order_id = ?
+                `, [order.order_id]);
+
+                if (additionalFields.length > 0) {
+                    order.shipping_cost = additionalFields[0].shipping_cost || 0;
+                    order.shipping_address = additionalFields[0].shipping_address || '';
+                    order.payment_method = additionalFields[0].payment_method || 'online';
+                }
+            } catch (fieldError) {
+                console.log(`ℹ️ Some fields not available for order ${order.order_id}`);
+            }
+
+            // Get order items
+            try {
+                const [orderItems] = await db.query(`
+                    SELECT
+                        oi.order_item_id,
+                        oi.product_id,
+                        oi.quantity,
+                        oi.price,
+                        p.name as product_name,
+                        p.images as product_image,
+                        p.description as product_description
+                    FROM OrderItems oi
+                    LEFT JOIN Products p ON oi.product_id = p.product_id
+                    WHERE oi.order_id = ?
+                `, [order.order_id]);
+
+                order.items = orderItems;
+                console.log(`📋 Order ${order.order_id} has ${orderItems.length} items`);
+            } catch (itemError) {
+                console.error(`❌ Error fetching items for order ${order.order_id}:`, itemError);
+                order.items = [];
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            orders: orders,
+            debug: {
+                totalGuestOrders: allGuestOrders[0].total,
+                searchEmail: email,
+                foundOrders: orders.length
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error fetching guest orders:', error);
+        console.error('Error details:', error.message);
+        console.error('Stack trace:', error.stack);
+
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch guest orders',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     createOrderWithItems,
     getAllOrders,
@@ -1157,5 +1394,7 @@ module.exports = {
     removeFromCart,
     getUserOrders,
     addToGuestCart,
-    getGuestCart
+    getGuestCart,
+    createGuestOrder,
+    getGuestOrders
 }

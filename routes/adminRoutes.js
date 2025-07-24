@@ -15,6 +15,7 @@ const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead
 const { getAllGiftCards, createGiftCard, getGiftCardById, updateGiftCard, deleteGiftCard } = require('../controllers/giftCardController');
 const { getReviewsByEntity } = require('../controllers/reviewController');
 const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransactions, getTopSessions, getUserGrowth, getDashboardStats, getOrderStats } = require('../controllers/dashboardController');
+const { runMigrations } = require('../controllers/tablesController');
 
 const router = express.Router()
 
@@ -126,6 +127,7 @@ router.put('/update-deal/:id',updateDeal)
 //delete deal
 router.delete('/delete-deal/:id',deleteDeal)
 
-
+// Manual migration route
+router.post('/run-migrations', isAdmin, runMigrations)
 
 module.exports = router

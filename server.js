@@ -52,6 +52,143 @@ mySqlPool.query('SELECT 1')
     await createTables();
     console.log("✅ Database tables created/verified".green);
 
+    // ---- IMMEDIATE: Critical Guest Columns Migration ----
+    console.log("🔧 IMMEDIATE: Adding critical guest columns...");
+
+    // Add guest columns to EventRegistrations immediately
+    try {
+      const eventGuestFields = ['guest_name', 'guest_email', 'guest_phone', 'is_guest_registration', 'registration_reference'];
+      for (const field of eventGuestFields) {
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM EventRegistrations LIKE '${field}'`);
+          if (columns.length === 0) {
+            let fieldDef = `${field} VARCHAR(255) NULL`;
+            if (field === 'is_guest_registration') fieldDef = `${field} BOOLEAN DEFAULT FALSE`;
+            if (field === 'guest_phone') fieldDef = `${field} VARCHAR(20) NULL`;
+
+            await mySqlPool.query(`ALTER TABLE EventRegistrations ADD COLUMN ${fieldDef}`);
+            console.log(`✅ IMMEDIATE: Added ${field} to EventRegistrations`);
+          }
+        } catch (error) {
+          if (!error.message.includes('Duplicate column')) {
+            console.log(`⚠️ Error adding ${field} to EventRegistrations:`, error.message);
+          }
+        }
+      }
+
+      // Make user_id nullable
+      await mySqlPool.query('ALTER TABLE EventRegistrations MODIFY COLUMN user_id INT NULL');
+      console.log('✅ IMMEDIATE: Made EventRegistrations.user_id nullable');
+
+      // Add registration_date column if missing
+      try {
+        const [regDateColumns] = await mySqlPool.query(`SHOW COLUMNS FROM EventRegistrations LIKE 'registration_date'`);
+        if (regDateColumns.length === 0) {
+          await mySqlPool.query(`ALTER TABLE EventRegistrations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+          console.log('✅ IMMEDIATE: Added registration_date to EventRegistrations');
+        }
+      } catch (error) {
+        console.log('⚠️ Error adding registration_date to EventRegistrations:', error.message);
+      }
+    } catch (error) {
+      console.log('⚠️ EventRegistrations immediate migration error:', error.message);
+    }
+
+    // Add guest columns to TournamentRegistrations immediately
+    try {
+      const tournamentGuestFields = ['guest_name', 'guest_email', 'guest_phone', 'is_guest_registration', 'registration_reference'];
+      for (const field of tournamentGuestFields) {
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM TournamentRegistrations LIKE '${field}'`);
+          if (columns.length === 0) {
+            let fieldDef = `${field} VARCHAR(255) NULL`;
+            if (field === 'is_guest_registration') fieldDef = `${field} BOOLEAN DEFAULT FALSE`;
+            if (field === 'guest_phone') fieldDef = `${field} VARCHAR(20) NULL`;
+
+            await mySqlPool.query(`ALTER TABLE TournamentRegistrations ADD COLUMN ${fieldDef}`);
+            console.log(`✅ IMMEDIATE: Added ${field} to TournamentRegistrations`);
+          }
+        } catch (error) {
+          if (!error.message.includes('Duplicate column')) {
+            console.log(`⚠️ Error adding ${field} to TournamentRegistrations:`, error.message);
+          }
+        }
+      }
+
+      // Make user_id nullable
+      await mySqlPool.query('ALTER TABLE TournamentRegistrations MODIFY COLUMN user_id INT NULL');
+      console.log('✅ IMMEDIATE: Made TournamentRegistrations.user_id nullable');
+
+      // Add registration_date column if missing
+      try {
+        const [regDateColumns] = await mySqlPool.query(`SHOW COLUMNS FROM TournamentRegistrations LIKE 'registration_date'`);
+        if (regDateColumns.length === 0) {
+          await mySqlPool.query(`ALTER TABLE TournamentRegistrations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+          console.log('✅ IMMEDIATE: Added registration_date to TournamentRegistrations');
+        }
+      } catch (error) {
+        console.log('⚠️ Error adding registration_date to TournamentRegistrations:', error.message);
+      }
+    } catch (error) {
+      console.log('⚠️ TournamentRegistrations immediate migration error:', error.message);
+    }
+
+    console.log("✅ IMMEDIATE: Critical guest columns migration completed".green);
+
+    // ---- CRITICAL: Orders Table Guest Support Migration ----
+    console.log("🔧 Adding guest support to Orders table...");
+
+    try {
+      // Add guest columns to Orders table
+      const orderGuestFields = [
+        'guest_name VARCHAR(255) NULL',
+        'guest_email VARCHAR(255) NULL',
+        'guest_phone VARCHAR(20) NULL',
+        'is_guest_order BOOLEAN DEFAULT FALSE',
+        'order_reference VARCHAR(50) NULL',
+        'shipping_address TEXT NULL',
+        'shipping_cost DECIMAL(10,2) DEFAULT 0.00',
+        'payment_method VARCHAR(20) DEFAULT "online"'
+      ];
+
+      for (const field of orderGuestFields) {
+        const fieldName = field.split(' ')[0];
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM Orders LIKE '${fieldName}'`);
+          if (columns.length === 0) {
+            await mySqlPool.query(`ALTER TABLE Orders ADD COLUMN ${field}`);
+            console.log(`✅ Added ${fieldName} to Orders`);
+          }
+        } catch (error) {
+          if (!error.message.includes('Duplicate column')) {
+            console.log(`⚠️ Error adding ${fieldName} to Orders:`, error.message);
+          }
+        }
+      }
+
+      // Make user_id nullable for guest orders
+      try {
+        await mySqlPool.query('ALTER TABLE Orders MODIFY COLUMN user_id INT NULL');
+        console.log('✅ Made Orders.user_id nullable');
+      } catch (error) {
+        console.log('ℹ️ Orders.user_id already nullable');
+      }
+
+      // Make shipping_address_id nullable for guest orders
+      try {
+        await mySqlPool.query('ALTER TABLE Orders MODIFY COLUMN shipping_address_id INT NULL');
+        console.log('✅ Made Orders.shipping_address_id nullable');
+      } catch (error) {
+        console.log('ℹ️ Orders.shipping_address_id already nullable');
+      }
+    } catch (error) {
+      console.log('❌ Error updating Orders for guest support:', error.message);
+    }
+
+    console.log("✅ Orders table guest support migration completed".green);
+
+
+
     // Run migrations to update existing tables
     try {
       await updateTournamentsTable();
@@ -60,6 +197,146 @@ mySqlPool.query('SELECT 1')
       console.log("⚠️  Migration warning:".yellow, error.message);
       // Don't exit on migration errors, just log them
     }
+
+    // ---- CRITICAL: Payment System Migrations ----
+    console.log("🔧 Running critical payment system migrations...");
+
+    // 1. Fix Payments table entity_type column
+    try {
+      console.log('🔧 Updating Payments table entity_type column...');
+      await mySqlPool.query(`
+        ALTER TABLE Payments
+        MODIFY COLUMN entity_type VARCHAR(50) DEFAULT 'order'
+      `);
+      console.log('✅ Payments entity_type column updated to VARCHAR(50)');
+    } catch (error) {
+      if (!error.message.includes('already')) {
+        console.log('❌ Error updating Payments entity_type:', error.message);
+      }
+    }
+
+    // 2. Add payment_id column to EventRegistrations
+    try {
+      console.log('🔧 Adding payment_id column to EventRegistrations...');
+      const [eventColumns] = await mySqlPool.query('SHOW COLUMNS FROM EventRegistrations LIKE "payment_id"');
+      if (eventColumns.length === 0) {
+        await mySqlPool.query(`
+          ALTER TABLE EventRegistrations
+          ADD COLUMN payment_id INT NULL AFTER payment_option
+        `);
+        await mySqlPool.query(`
+          ALTER TABLE EventRegistrations
+          ADD CONSTRAINT fk_event_registrations_payment
+          FOREIGN KEY (payment_id) REFERENCES Payments(payment_id) ON DELETE SET NULL
+        `);
+        console.log('✅ payment_id column added to EventRegistrations');
+      } else {
+        console.log('✅ payment_id column already exists in EventRegistrations');
+      }
+    } catch (error) {
+      console.log('❌ Error adding payment_id to EventRegistrations:', error.message);
+    }
+
+    // 3. Add payment_id column to TournamentRegistrations
+    try {
+      console.log('🔧 Adding payment_id column to TournamentRegistrations...');
+      const [tournamentColumns] = await mySqlPool.query('SHOW COLUMNS FROM TournamentRegistrations LIKE "payment_id"');
+      if (tournamentColumns.length === 0) {
+        await mySqlPool.query(`
+          ALTER TABLE TournamentRegistrations
+          ADD COLUMN payment_id INT NULL AFTER payment_option
+        `);
+        await mySqlPool.query(`
+          ALTER TABLE TournamentRegistrations
+          ADD CONSTRAINT fk_tournament_registrations_payment
+          FOREIGN KEY (payment_id) REFERENCES Payments(payment_id) ON DELETE SET NULL
+        `);
+        console.log('✅ payment_id column added to TournamentRegistrations');
+      } else {
+        console.log('✅ payment_id column already exists in TournamentRegistrations');
+      }
+    } catch (error) {
+      console.log('❌ Error adding payment_id to TournamentRegistrations:', error.message);
+    }
+
+    console.log("✅ Critical payment system migrations completed".green);
+
+    // ---- CRITICAL: Guest Registration Data Migrations ----
+    console.log("🔧 Ensuring guest registration columns exist...");
+
+    // 4. Ensure EventRegistrations has all guest columns
+    try {
+      const eventGuestFields = [
+        'guest_name VARCHAR(255) NULL',
+        'guest_email VARCHAR(255) NULL',
+        'guest_phone VARCHAR(20) NULL',
+        'is_guest_registration BOOLEAN DEFAULT FALSE',
+        'registration_reference VARCHAR(50) NULL'
+      ];
+
+      for (const field of eventGuestFields) {
+        const fieldName = field.split(' ')[0];
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM EventRegistrations LIKE '${fieldName}'`);
+          if (columns.length === 0) {
+            await mySqlPool.query(`ALTER TABLE EventRegistrations ADD COLUMN ${field}`);
+            console.log(`✅ Added ${fieldName} to EventRegistrations`);
+          }
+        } catch (error) {
+          if (!error.message.includes('Duplicate column')) {
+            console.log(`⚠️ Error adding ${fieldName} to EventRegistrations:`, error.message);
+          }
+        }
+      }
+
+      // Make user_id nullable for guest registrations
+      try {
+        await mySqlPool.query('ALTER TABLE EventRegistrations MODIFY COLUMN user_id INT NULL');
+        console.log('✅ Made EventRegistrations.user_id nullable');
+      } catch (error) {
+        console.log('ℹ️ EventRegistrations.user_id already nullable');
+      }
+    } catch (error) {
+      console.log('❌ Error updating EventRegistrations for guests:', error.message);
+    }
+
+    // 5. Ensure TournamentRegistrations has all guest columns
+    try {
+      const tournamentGuestFields = [
+        'guest_name VARCHAR(255) NULL',
+        'guest_email VARCHAR(255) NULL',
+        'guest_phone VARCHAR(20) NULL',
+        'is_guest_registration BOOLEAN DEFAULT FALSE',
+        'registration_reference VARCHAR(50) NULL'
+      ];
+
+      for (const field of tournamentGuestFields) {
+        const fieldName = field.split(' ')[0];
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM TournamentRegistrations LIKE '${fieldName}'`);
+          if (columns.length === 0) {
+            await mySqlPool.query(`ALTER TABLE TournamentRegistrations ADD COLUMN ${field}`);
+            console.log(`✅ Added ${fieldName} to TournamentRegistrations`);
+          }
+        } catch (error) {
+          if (!error.message.includes('Duplicate column')) {
+            console.log(`⚠️ Error adding ${fieldName} to TournamentRegistrations:`, error.message);
+          }
+        }
+      }
+
+      // Make user_id nullable for guest registrations
+      try {
+        await mySqlPool.query('ALTER TABLE TournamentRegistrations MODIFY COLUMN user_id INT NULL');
+        console.log('✅ Made TournamentRegistrations.user_id nullable');
+      } catch (error) {
+        console.log('ℹ️ TournamentRegistrations.user_id already nullable');
+      }
+    } catch (error) {
+      console.log('❌ Error updating TournamentRegistrations for guests:', error.message);
+    }
+
+    console.log("✅ Guest registration data migrations completed".green);
 
     // Apply enhanced booking system database updates
     try {

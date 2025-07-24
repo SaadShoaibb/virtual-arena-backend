@@ -23,7 +23,8 @@ const handleWebhook = async (req, res) => {
   }
 
   // Log the event type for debugging
-  console.log('Webhook received:', event.type);
+  console.log('🎯 Webhook received:', event.type);
+  console.log('📋 Event data:', JSON.stringify(event.data.object, null, 2));
 
   try {
     // Handle different event types
@@ -85,10 +86,21 @@ async function handleCheckoutSessionCompleted(session) {
 
     // If this is an order payment (from cart checkout), handle it differently
     if (entity_type === 'order' && entity_id) {
+      console.log(`🛒 Processing order payment: order_id=${entity_id}, user_id=${user_id}`);
+
       // Update the existing order status
       await updateOrderStatus(entity_id, 'paid');
-      await clearUserCart(user_id);
-      console.log(`Order ${entity_id} marked as paid and cart cleared for user ${user_id}`);
+
+      // Update the payment record status as well
+      await updatePaymentStatus(session.id, 'succeeded');
+
+      // Clear user cart (only if not guest)
+      if (user_id && user_id !== '0') {
+        await clearUserCart(user_id);
+        console.log(`✅ Order ${entity_id} marked as paid and cart cleared for user ${user_id}`);
+      } else {
+        console.log(`✅ Guest order ${entity_id} marked as paid`);
+      }
       return;
     }
 
@@ -363,15 +375,40 @@ async function handleFailedPaymentIntent(paymentIntent) {
 async function updateOrderStatus(orderId, status) {
   try {
     const updateQuery = `
-      UPDATE Orders 
-      SET payment_status = ? 
+      UPDATE Orders
+      SET payment_status = ?
       WHERE order_id = ?
     `;
-    
-    await db.query(updateQuery, [status, orderId]);
-    console.log(`Order ${orderId} status updated to ${status}`);
+
+    const [result] = await db.query(updateQuery, [status, orderId]);
+    console.log(`✅ Order ${orderId} payment status updated to ${status} (affected rows: ${result.affectedRows})`);
+
+    // Verify the update
+    const [verifyResult] = await db.query('SELECT payment_status FROM Orders WHERE order_id = ?', [orderId]);
+    if (verifyResult.length > 0) {
+      console.log(`🔍 Verified order ${orderId} payment status: ${verifyResult[0].payment_status}`);
+    }
   } catch (error) {
-    console.error(`Error updating order status: ${error.message}`);
+    console.error(`❌ Error updating order status: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to update payment record status
+ */
+async function updatePaymentStatus(sessionId, status) {
+  try {
+    const updateQuery = `
+      UPDATE Payments
+      SET status = ?
+      WHERE checkout_session_id = ?
+    `;
+
+    const [result] = await db.query(updateQuery, [status, sessionId]);
+    console.log(`✅ Payment record updated to ${status} for session ${sessionId} (affected rows: ${result.affectedRows})`);
+  } catch (error) {
+    console.error(`❌ Error updating payment status: ${error.message}`);
     throw error;
   }
 }

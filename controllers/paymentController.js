@@ -10,7 +10,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // Use Stripe s
 const createCheckoutSession = async (req, res) => {
   try {
     console.log('Received checkout session request:', req.body);
-    const { user_id, amount, connected_account_id, entity_type, entity_id } = req.body;
+    const { user_id, amount, connected_account_id, entity_type, entity_id, guest_info } = req.body;
     const numericAmount = Number(amount);
     
     // Validate required fields - user_id can be 0 for guest bookings
@@ -51,12 +51,31 @@ const createCheckoutSession = async (req, res) => {
       userEmail = user.email;
       userName = user.username;
     } else {
-      // For guest bookings, try to get email from the booking if available
-      if (entity_type === 'booking' && entity_id) {
+      // For guest users, try to get info from various sources
+      if (guest_info && guest_info.email) {
+        // Use provided guest info
+        userEmail = guest_info.email;
+        userName = guest_info.name || 'Guest User';
+      } else if (entity_type === 'booking' && entity_id) {
+        // For guest bookings, get email from the booking
         const [bookingRows] = await db.query('SELECT guest_email, guest_name FROM Bookings WHERE booking_id = ?', [entity_id]);
         if (bookingRows.length > 0 && bookingRows[0].guest_email) {
           userEmail = bookingRows[0].guest_email;
           userName = bookingRows[0].guest_name || 'Guest User';
+        }
+      } else if (entity_type === 'tournament_registration' && entity_id) {
+        // For guest tournament registrations
+        const [regRows] = await db.query('SELECT guest_email, guest_name FROM TournamentRegistrations WHERE registration_id = ?', [entity_id]);
+        if (regRows.length > 0 && regRows[0].guest_email) {
+          userEmail = regRows[0].guest_email;
+          userName = regRows[0].guest_name || 'Guest User';
+        }
+      } else if (entity_type === 'event_registration' && entity_id) {
+        // For guest event registrations
+        const [regRows] = await db.query('SELECT guest_email, guest_name FROM EventRegistrations WHERE registration_id = ?', [entity_id]);
+        if (regRows.length > 0 && regRows[0].guest_email) {
+          userEmail = regRows[0].guest_email;
+          userName = regRows[0].guest_name || 'Guest User';
         }
       }
     }
@@ -104,11 +123,21 @@ const createCheckoutSession = async (req, res) => {
     }
 
     // Create Stripe checkout session
+    console.log('🔄 Creating Stripe session with metadata:', sessionParams.metadata);
     const session = await stripe.checkout.sessions.create(sessionParams);
+    console.log('✅ Stripe session created:', session.id);
 
     // Create a payment record in the database
     // Use NULL for guest bookings (user_id = 0) to avoid foreign key constraint issues
     const paymentUserId = user_id > 0 ? user_id : null;
+    console.log('💾 Creating payment record:', {
+      user_id: paymentUserId,
+      entity_type: entity_type || 'order',
+      entity_id: entity_id || 0,
+      amount: numericAmount,
+      session_id: session.id
+    });
+
     const [paymentResult] = await db.query(
       'INSERT INTO Payments (user_id, entity_type, entity_id, amount, currency, checkout_session_id, connected_account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
@@ -122,6 +151,8 @@ const createCheckoutSession = async (req, res) => {
       ]
     );
 
+    console.log('✅ Payment record created with ID:', paymentResult.insertId);
+
     // Then, if there's an entity (booking, tournament, etc.), update it with payment_id
     // For example, if we have a booking:
     if (entity_type === 'booking') {
@@ -131,25 +162,36 @@ const createCheckoutSession = async (req, res) => {
       );
     }
 
-    // Similarly for tournament registration
-    if (entity_type === 'tournament') {
-      await db.query(
-        'UPDATE TournamentRegistrations SET payment_id = ? WHERE registration_id = ?',
-        [paymentResult.insertId, entity_id]
-      );
+    // Update tournament registration with payment_id
+    if (entity_type === 'tournament' || entity_type === 'tournament_registration') {
+      try {
+        await db.query(
+          'UPDATE TournamentRegistrations SET payment_id = ? WHERE registration_id = ?',
+          [paymentResult.insertId, entity_id]
+        );
+        console.log(`✅ Updated TournamentRegistrations payment_id for registration ${entity_id}`);
+      } catch (error) {
+        console.log(`❌ Error updating TournamentRegistrations payment_id:`, error.message);
+      }
     }
 
-    // Similarly for event registration
-    if (entity_type === 'event') {
-      await db.query(
-        'UPDATE EventRegistrations SET payment_id = ? WHERE registration_id = ?',
-        [paymentResult.insertId, entity_id]
-      );
+    // Update event registration with payment_id
+    if (entity_type === 'event' || entity_type === 'event_registration') {
+      try {
+        await db.query(
+          'UPDATE EventRegistrations SET payment_id = ? WHERE registration_id = ?',
+          [paymentResult.insertId, entity_id]
+        );
+        console.log(`✅ Updated EventRegistrations payment_id for registration ${entity_id}`);
+      } catch (error) {
+        console.log(`❌ Error updating EventRegistrations payment_id:`, error.message);
+      }
     }
 
     res.status(200).json({
       success: true,
-      sessionId: session.id
+      sessionId: session.id,
+      url: session.url
     });
 
     // Development fallback: Auto-complete payment after 30 seconds if webhook doesn't work
@@ -378,9 +420,55 @@ const getAllPayments = async (req, res) => {
   }
 };
 
+/**
+ * Manual payment status update for testing/admin purposes
+ */
+const updatePaymentStatus = async (req, res) => {
+  try {
+    const { order_id, payment_status } = req.body;
+
+    if (!order_id || !payment_status) {
+      return res.status(400).json({
+        success: false,
+        message: 'order_id and payment_status are required'
+      });
+    }
+
+    console.log(`🔧 Manual update: Setting order ${order_id} payment status to ${payment_status}`);
+
+    // Update order payment status
+    const [result] = await db.query(
+      'UPDATE Orders SET payment_status = ? WHERE order_id = ?',
+      [payment_status, order_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    console.log(`✅ Order ${order_id} payment status updated to ${payment_status}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Order ${order_id} payment status updated to ${payment_status}`
+    });
+
+  } catch (error) {
+    console.error('Error updating payment status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update payment status'
+    });
+  }
+};
+
 module.exports = {
   createCheckoutSession,
   confirmPayment,
   getPaymentDetails,
-  getAllPayments
+  getAllPayments,
+  updatePaymentStatus
 };
