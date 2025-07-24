@@ -8,26 +8,26 @@ const { sendNotification, sendAdminNotification } = require("../services/service
 
 const getAllUsers = async (req, res) => {
     try {
-        const [records] = await db.query('SELECT * FROM users')
-        if (!records) {
-            return res.send(404).send({
+        const [records] = await db.query('SELECT * FROM Users')
+        if (!records || records.length === 0) {
+            return res.status(404).send({
                 success: false,
-                message: 'No user found',
+                message: 'No users found',
             })
         }
 
         res.status(200).send({
             success: true,
-            message: 'All User Fetched',
+            message: 'All users fetched successfully',
             users: records
         })
 
     } catch (error) {
-        console.log(error)
-        req.status(500).send({
+        console.log('Error fetching users:', error)
+        res.status(500).send({
             success: false,
-            message: 'Server error in server',
-            error
+            message: 'Server error while fetching users',
+            error: error.message
         })
     }
 }

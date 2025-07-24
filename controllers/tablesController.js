@@ -238,6 +238,23 @@ const createTables = async () => {
             console.log('Error adding guest fields to TournamentRegistrations:', error.message);
         }
 
+        // Add payment_option column to EventRegistrations if it doesn't exist
+        try {
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM EventRegistrations LIKE 'payment_option';
+            `);
+
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE EventRegistrations
+                    ADD COLUMN payment_option ENUM('online', 'at_event') DEFAULT 'online';
+                `);
+                console.log('payment_option column added to EventRegistrations successfully');
+            }
+        } catch (error) {
+            console.log('Error adding payment_option column to EventRegistrations:', error.message);
+        }
+
         // Add guest registration fields to EventRegistrations
         try {
             // Make user_id nullable for guest registrations
@@ -384,12 +401,15 @@ const createTables = async () => {
                 order_id INT,
                 product_id INT,
                 tournament_id INT,
+                event_id INT,
                 quantity INT NOT NULL,
                 price DECIMAL(10, 2) NOT NULL,
-                item_type ENUM('product', 'tournament') DEFAULT 'product',
+                item_type ENUM('product', 'tournament', 'event') DEFAULT 'product',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (order_id) REFERENCES Orders(order_id),
                 FOREIGN KEY (product_id) REFERENCES Products(product_id),
-                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id)
+                FOREIGN KEY (tournament_id) REFERENCES Tournaments(tournament_id),
+                FOREIGN KEY (event_id) REFERENCES Events(event_id)
             );`
         )
         
@@ -399,16 +419,55 @@ const createTables = async () => {
             const [columns] = await db.query(`
                 SHOW COLUMNS FROM OrderItems LIKE 'item_type';
             `);
-            
+
             if (columns.length === 0) {
                 await db.query(`
                     ALTER TABLE OrderItems
-                    ADD COLUMN item_type ENUM('product', 'tournament') DEFAULT 'product';
+                    ADD COLUMN item_type ENUM('product', 'tournament', 'event') DEFAULT 'product';
                 `);
                 console.log('item_type column added to OrderItems successfully');
+            } else {
+                // Update existing item_type enum to include 'event'
+                try {
+                    await db.query(`
+                        ALTER TABLE OrderItems
+                        MODIFY COLUMN item_type ENUM('product', 'tournament', 'event') DEFAULT 'product';
+                    `);
+                    console.log('item_type column updated to include event type');
+                } catch (enumError) {
+                    console.log('item_type enum already includes event or update not needed:', enumError.message);
+                }
             }
         } catch (error) {
             console.log('Error adding item_type column to OrderItems:', error.message);
+        }
+
+        // Add event_id column to OrderItems if it doesn't exist
+        try {
+            const [columns] = await db.query(`
+                SHOW COLUMNS FROM OrderItems LIKE 'event_id';
+            `);
+
+            if (columns.length === 0) {
+                await db.query(`
+                    ALTER TABLE OrderItems
+                    ADD COLUMN event_id INT NULL;
+                `);
+                console.log('event_id column added to OrderItems successfully');
+
+                // Add foreign key constraint for event_id
+                try {
+                    await db.query(`
+                        ALTER TABLE OrderItems
+                        ADD FOREIGN KEY (event_id) REFERENCES Events(event_id);
+                    `);
+                    console.log('Foreign key constraint added for event_id');
+                } catch (fkError) {
+                    console.log('Foreign key constraint for event_id already exists or could not be added:', fkError.message);
+                }
+            }
+        } catch (error) {
+            console.log('Error adding event_id column to OrderItems:', error.message);
         }
 
         // CheckoutPayment
