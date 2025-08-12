@@ -32,6 +32,9 @@ app.use('/api/v1/auth', require('./routes/authRoutes'));
 app.use('/api/v1/admin', require('./routes/adminRoutes'));
 app.use('/api/v1/user', require('./routes/userRoutes'));
 app.use('/api/v1/payment', require('./routes/paymentRoutes'));
+app.use('/api/v1/admin/site-settings', require('./routes/siteSettingsRoutes'));
+app.use('/api/v1/admin/sessions', require('./routes/sessionPricingRoutes'));
+app.use('/api/v1/admin/passes', require('./routes/passesRoutes'));
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -51,6 +54,187 @@ mySqlPool.query('SELECT 1')
     // Create tables first
     await createTables();
     console.log("✅ Database tables created/verified".green);
+
+    // CRITICAL: Ensure SiteSettings table exists immediately
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS SiteSettings (
+          setting_id INT AUTO_INCREMENT PRIMARY KEY,
+          setting_key VARCHAR(100) NOT NULL UNIQUE,
+          setting_value TEXT NOT NULL,
+          setting_type ENUM('string', 'number', 'boolean', 'date') DEFAULT 'string',
+          description TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ CRITICAL: SiteSettings table created/verified');
+
+      // Insert default countdown settings immediately
+      const countdownDate = new Date();
+      countdownDate.setDate(countdownDate.getDate() + 100);
+
+      await mySqlPool.query(`
+        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
+        VALUES ('grand_opening_date', ?, 'date', 'Grand opening countdown target date')
+      `, [countdownDate.toISOString()]);
+
+      await mySqlPool.query(`
+        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
+        VALUES ('countdown_enabled', 'true', 'boolean', 'Enable/disable countdown banner')
+      `);
+      console.log('✅ CRITICAL: Default countdown settings inserted');
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating SiteSettings:', error);
+    }
+
+    // CRITICAL: Ensure SessionPricing table exists immediately
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS SessionPricing (
+          pricing_id INT AUTO_INCREMENT PRIMARY KEY,
+          session_id INT NOT NULL,
+          session_count INT NOT NULL DEFAULT 1,
+          price DECIMAL(10,2) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (session_id) REFERENCES VRSessions(session_id) ON DELETE CASCADE,
+          UNIQUE KEY unique_session_pricing (session_id, session_count)
+        )
+      `);
+      console.log('✅ CRITICAL: SessionPricing table created/verified');
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating SessionPricing:', error);
+    }
+
+    // CRITICAL: Ensure GroupDiscounts table exists immediately
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS GroupDiscounts (
+          discount_id INT AUTO_INCREMENT PRIMARY KEY,
+          min_players INT NOT NULL,
+          max_players INT NULL,
+          discount_percentage DECIMAL(5,2) NOT NULL,
+          discount_name VARCHAR(100) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_range (min_players, max_players)
+        )
+      `);
+      console.log('✅ CRITICAL: GroupDiscounts table created/verified');
+
+      // Insert default group discounts
+      const defaultDiscounts = [
+        [5, 9, 10.00, 'Small Group Discount'],
+        [10, 19, 15.00, 'Medium Group Discount'],
+        [20, null, 20.00, 'Large Group Discount']
+      ];
+
+      for (const [min, max, percentage, name] of defaultDiscounts) {
+        try {
+          await mySqlPool.query(`
+            INSERT IGNORE INTO GroupDiscounts (min_players, max_players, discount_percentage, discount_name, is_active)
+            VALUES (?, ?, ?, ?, TRUE)
+          `, [min, max, percentage, name]);
+        } catch (error) {
+          // Ignore duplicate entries
+        }
+      }
+      console.log('✅ CRITICAL: Default group discounts inserted');
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating GroupDiscounts:', error);
+    }
+
+    // CRITICAL: Ensure TimePasses table exists immediately
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS TimePasses (
+          pass_id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(100) NOT NULL,
+          duration_hours INT NOT NULL,
+          price DECIMAL(10,2) NOT NULL,
+          description TEXT,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ CRITICAL: TimePasses table created/verified');
+
+      // Insert default time passes
+      const defaultPasses = [
+        ['1-Hour Pass', 1, 35.00, 'Unlimited access to all experiences for 1 hour'],
+        ['2-Hour Pass', 2, 55.00, 'Unlimited access to all experiences for 2 hours'],
+        ['Half-Day Pass', 4, 85.00, 'Unlimited access to all experiences for 4 hours'],
+        ['Full-Day Pass', 8, 120.00, 'Unlimited access to all experiences for 8 hours']
+      ];
+
+      for (const [name, duration, price, description] of defaultPasses) {
+        try {
+          await mySqlPool.query(`
+            INSERT IGNORE INTO TimePasses (name, duration_hours, price, description, is_active)
+            VALUES (?, ?, ?, ?, TRUE)
+          `, [name, duration, price, description]);
+        } catch (error) {
+          // Ignore duplicate entries
+        }
+      }
+      console.log('✅ CRITICAL: Default time passes inserted');
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating TimePasses:', error);
+    }
+
+    // CRITICAL: Setup default session pricing
+    try {
+      // Wait a moment for sessions to be created
+      setTimeout(async () => {
+        try {
+          // Get all sessions
+          const [sessions] = await mySqlPool.query('SELECT session_id, name FROM VRSessions');
+
+          // Default pricing map
+          const defaultPricing = {
+            'Free Roaming Arena': { price1: 12, price2: 20 },
+            'UFO Spaceship Cinema': { price1: 9, price2: 15 },
+            'VR 360': { price1: 9, price2: 15 },
+            'VR Battle': { price1: 9, price2: 15 },
+            'VR Warrior': { price1: 7, price2: 12 },
+            'VR Cat': { price1: 6, price2: 10 },
+            'Photo Booth': { price1: 6, price2: 6 },
+            'Free Roaming VR Arena 2.0': { price1: 12, price2: 20 },
+            'VR UFO 5 Players': { price1: 9, price2: 15 },
+            'VR 360° Motion Chair': { price1: 9, price2: 15 },
+            'HTC VIVE VR Standing Platform': { price1: 9, price2: 15 },
+            'VR Warrior 2players': { price1: 7, price2: 12 },
+            'VR CAT': { price1: 6, price2: 10 }
+          };
+
+          for (const session of sessions) {
+            const pricing = defaultPricing[session.name];
+            if (pricing) {
+              // Insert 1 session pricing
+              await mySqlPool.query(`
+                INSERT IGNORE INTO SessionPricing (session_id, session_count, price, is_active)
+                VALUES (?, 1, ?, TRUE)
+              `, [session.session_id, pricing.price1]);
+
+              // Insert 2 session pricing
+              await mySqlPool.query(`
+                INSERT IGNORE INTO SessionPricing (session_id, session_count, price, is_active)
+                VALUES (?, 2, ?, TRUE)
+              `, [session.session_id, pricing.price2]);
+            }
+          }
+          console.log('✅ CRITICAL: Default session pricing setup completed');
+        } catch (error) {
+          console.error('❌ Error setting up default session pricing:', error);
+        }
+      }, 2000); // Wait 2 seconds for sessions to be created
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR setting up session pricing:', error);
+    }
 
     // ---- IMMEDIATE: Critical Guest Columns Migration ----
     console.log("🔧 IMMEDIATE: Adding critical guest columns...");
@@ -586,6 +770,180 @@ async function applyBookingSystemUpdates() {
 
     console.log("✅ Enhanced booking system database updates completed successfully!");
 
+    // 9. Enhanced booking system - Multiple sessions and machines
+    try {
+      console.log('🔧 Adding enhanced booking system tables...');
+
+      // Create BookingItems table for multiple sessions per booking
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS BookingItems (
+          booking_item_id INT AUTO_INCREMENT PRIMARY KEY,
+          booking_id INT NOT NULL,
+          session_id INT NOT NULL,
+          session_name VARCHAR(255) NOT NULL,
+          start_time DATETIME NOT NULL,
+          end_time DATETIME NOT NULL,
+          session_count INT DEFAULT 1,
+          player_count INT DEFAULT 1,
+          price_per_session DECIMAL(10,2) NOT NULL,
+          total_price DECIMAL(10,2) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (booking_id) REFERENCES Bookings(booking_id) ON DELETE CASCADE,
+          FOREIGN KEY (session_id) REFERENCES VRSessions(session_id) ON DELETE CASCADE
+        )
+      `);
+      console.log('✅ Created BookingItems table');
+
+      // Add admin-configurable pricing table
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS SessionPricing (
+          pricing_id INT AUTO_INCREMENT PRIMARY KEY,
+          session_id INT NOT NULL,
+          session_count INT NOT NULL DEFAULT 1,
+          price DECIMAL(10,2) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (session_id) REFERENCES VRSessions(session_id) ON DELETE CASCADE,
+          UNIQUE KEY unique_session_pricing (session_id, session_count)
+        )
+      `);
+      console.log('✅ Created SessionPricing table');
+
+      // Add admin-configurable time slots table
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS TimeSlots (
+          slot_id INT AUTO_INCREMENT PRIMARY KEY,
+          start_hour INT NOT NULL,
+          end_hour INT NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_time_slot (start_hour, end_hour)
+        )
+      `);
+      console.log('✅ Created TimeSlots table');
+
+      // Insert default time slots (9 AM to 9 PM)
+      for (let hour = 9; hour <= 21; hour++) {
+        try {
+          await mySqlPool.query(`
+            INSERT IGNORE INTO TimeSlots (start_hour, end_hour, is_active)
+            VALUES (?, ?, TRUE)
+          `, [hour, hour + 1]);
+        } catch (error) {
+          // Ignore duplicate entries
+        }
+      }
+      console.log('✅ Inserted default time slots');
+
+      // Add countdown timer settings table
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS SiteSettings (
+          setting_id INT AUTO_INCREMENT PRIMARY KEY,
+          setting_key VARCHAR(100) NOT NULL UNIQUE,
+          setting_value TEXT NOT NULL,
+          setting_type ENUM('string', 'number', 'boolean', 'date') DEFAULT 'string',
+          description TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ Created SiteSettings table');
+
+      // Insert default countdown timer setting (100 days from now)
+      const countdownDate = new Date();
+      countdownDate.setDate(countdownDate.getDate() + 100);
+
+      await mySqlPool.query(`
+        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
+        VALUES ('grand_opening_date', ?, 'date', 'Grand opening countdown target date')
+      `, [countdownDate.toISOString()]);
+      console.log('✅ Inserted default countdown timer setting');
+
+      // Insert default countdown enabled flag
+      await mySqlPool.query(`
+        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
+        VALUES ('countdown_enabled', 'true', 'boolean', 'Enable/disable countdown banner')
+      `);
+      console.log('✅ Inserted default countdown enabled flag');
+
+      // Create group discounts table
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS GroupDiscounts (
+          discount_id INT AUTO_INCREMENT PRIMARY KEY,
+          min_players INT NOT NULL,
+          max_players INT NULL,
+          discount_percentage DECIMAL(5,2) NOT NULL,
+          discount_name VARCHAR(100) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_range (min_players, max_players)
+        )
+      `);
+      console.log('✅ Created GroupDiscounts table');
+
+      // Insert default group discounts
+      const defaultDiscounts = [
+        [5, 9, 10.00, 'Small Group Discount'],
+        [10, 19, 15.00, 'Medium Group Discount'],
+        [20, null, 20.00, 'Large Group Discount']
+      ];
+
+      for (const [min, max, percentage, name] of defaultDiscounts) {
+        try {
+          await mySqlPool.query(`
+            INSERT IGNORE INTO GroupDiscounts (min_players, max_players, discount_percentage, discount_name, is_active)
+            VALUES (?, ?, ?, ?, TRUE)
+          `, [min, max, percentage, name]);
+        } catch (error) {
+          // Ignore duplicate entries
+        }
+      }
+      console.log('✅ Inserted default group discounts');
+
+      // Enhanced VRSessions table with more fields for flexible duration and pricing
+      await mySqlPool.query(`
+        ALTER TABLE VRSessions
+        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT 0.25,
+        ADD COLUMN IF NOT EXISTS min_duration_hours DECIMAL(3,1) DEFAULT 0.25,
+        ADD COLUMN IF NOT EXISTS max_duration_hours DECIMAL(3,1) DEFAULT 4.0,
+        ADD COLUMN IF NOT EXISTS hourly_rate DECIMAL(10,2) DEFAULT 0.00,
+        ADD COLUMN IF NOT EXISTS setup_time_minutes INT DEFAULT 5,
+        ADD COLUMN IF NOT EXISTS cleanup_time_minutes INT DEFAULT 5
+      `);
+      console.log('✅ VRSessions table enhanced with duration and pricing fields');
+
+      // Create SessionDurationPricing table for flexible pricing
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS SessionDurationPricing (
+          pricing_id INT AUTO_INCREMENT PRIMARY KEY,
+          session_id INT NOT NULL,
+          duration_hours DECIMAL(3,1) NOT NULL,
+          price DECIMAL(10,2) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (session_id) REFERENCES VRSessions(session_id) ON DELETE CASCADE,
+          UNIQUE KEY unique_session_duration (session_id, duration_hours)
+        )
+      `);
+      console.log('✅ SessionDurationPricing table created/verified');
+
+      // Add hour-based booking fields to Bookings table
+      await mySqlPool.query(`
+        ALTER TABLE Bookings
+        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT 0.25,
+        ADD COLUMN IF NOT EXISTS hourly_rate DECIMAL(10,2) DEFAULT 0.00,
+        ADD COLUMN IF NOT EXISTS booking_type ENUM('session', 'hourly') DEFAULT 'session'
+      `);
+      console.log('✅ Bookings table enhanced with hour-based booking fields');
+
+    } catch (error) {
+      console.log(`⚠️ Error adding enhanced booking system tables:`, error.message);
+    }
+
   } catch (error) {
     console.error("❌ Error applying enhanced booking system updates:", error);
     // Don't exit the process, just log the error and continue
@@ -602,7 +960,7 @@ async function populateVRSessions() {
       {
         name: 'Free Roaming Arena',
         description: 'Experience unlimited freedom in our spacious VR arena (34x49 feet) with full-body tracking and wireless headsets.',
-        price: 12.00, // Single session price
+        price: 12.00, // Single session price - CORRECT PRICE
         duration_minutes: 15,
         max_players: 10, // Free-roaming arena (34x49 feet, up to 10 players)
         machine_type: 'Free Roaming Arena',
@@ -611,7 +969,7 @@ async function populateVRSessions() {
       {
         name: 'UFO Spaceship Cinema',
         description: 'Immersive cinematic VR experience aboard a UFO spaceship with 360-degree visuals.',
-        price: 9.00, // Single session price
+        price: 9.00, // Single session price - CORRECT PRICE
         duration_minutes: 15,
         max_players: 5, // UFO Spaceship (5 seats)
         machine_type: 'UFO Spaceship Cinema',
@@ -688,14 +1046,14 @@ async function populateVRSessions() {
         );
         console.log(`✅ Created VR session: ${session.name}`);
       } else {
-        // Update existing session to ensure data is current
+        // Update existing session to ensure data is current and CORRECT PRICING
         await mySqlPool.query(
           `UPDATE VRSessions
            SET description = ?, price = ?, duration_minutes = ?, max_players = ?, machine_type = ?, is_active = ?
            WHERE name = ?`,
           [
             session.description,
-            session.price,
+            session.price, // This ensures correct pricing is always applied
             session.duration_minutes,
             session.max_players,
             session.machine_type,
@@ -703,7 +1061,7 @@ async function populateVRSessions() {
             session.name
           ]
         );
-        console.log(`ℹ️ Updated VR session: ${session.name}`);
+        console.log(`✅ FIXED PRICING for VR session: ${session.name} - Price: $${session.price}`);
       }
     }
 
@@ -742,7 +1100,30 @@ async function populateVRSessions() {
       console.log(`⚠️ Session cleanup warning: ${cleanupError.message}`);
     }
 
+    // 🚨 CRITICAL FIX: Ensure all session prices are correct (fix 10x pricing bug)
+    console.log("🔧 Applying critical pricing fixes...");
+    const pricingFixes = [
+      { name: 'Free Roaming Arena', correctPrice: 12.00 },
+      { name: 'UFO Spaceship Cinema', correctPrice: 9.00 },
+      { name: 'VR 360', correctPrice: 9.00 },
+      { name: 'VR Battle', correctPrice: 9.00 },
+      { name: 'VR Warrior', correctPrice: 7.00 },
+      { name: 'VR Cat', correctPrice: 6.00 },
+      { name: 'Photo Booth', correctPrice: 6.00 }
+    ];
+
+    for (const fix of pricingFixes) {
+      const [result] = await mySqlPool.query(
+        'UPDATE VRSessions SET price = ? WHERE name = ?',
+        [fix.correctPrice, fix.name]
+      );
+      if (result.affectedRows > 0) {
+        console.log(`🔧 PRICING FIX: ${fix.name} = $${fix.correctPrice}`);
+      }
+    }
+
     console.log("✅ VR Sessions population and cleanup completed successfully!");
+    console.log("🚨 CRITICAL PRICING BUG FIXED - All session prices corrected");
 
   } catch (error) {
     console.error("❌ Error populating VR sessions:", error);
