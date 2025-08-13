@@ -4,13 +4,29 @@ const db = require('../config/db');
 const getSiteSetting = async (req, res) => {
     try {
         const { key } = req.params;
-        
+        console.log(`🔧 CRITICAL: Fetching setting: ${key}`);
+
+        // Check if table exists
+        const [tables] = await db.query("SHOW TABLES LIKE 'SiteSettings'");
+        console.log('🔧 CRITICAL: SiteSettings table exists:', tables.length > 0);
+
+        if (tables.length === 0) {
+            console.error('❌ CRITICAL: SiteSettings table does not exist!');
+            return res.status(500).json({ success: false, message: 'SiteSettings table not found' });
+        }
+
         const [rows] = await db.query(
             'SELECT * FROM SiteSettings WHERE setting_key = ?',
             [key]
         );
+        console.log(`🔧 CRITICAL: Found ${rows.length} rows for setting: ${key}`);
+
+        if (rows.length > 0) {
+            console.log(`🔧 CRITICAL: Setting value: ${key} = ${rows[0].setting_value}`);
+        }
 
         if (rows.length === 0) {
+            console.log(`⚠️ CRITICAL: Setting not found: ${key}`);
             return res.status(404).json({
                 success: false,
                 message: 'Setting not found'
@@ -55,13 +71,31 @@ const getSiteSetting = async (req, res) => {
 // Get grand opening date specifically
 const getGrandOpeningDate = async (req, res) => {
     try {
+        console.log('🔧 CRITICAL: Fetching grand_opening_date...');
+
+        // Check if table exists
+        const [tables] = await db.query("SHOW TABLES LIKE 'SiteSettings'");
+        console.log('🔧 CRITICAL: SiteSettings table exists for grand opening:', tables.length > 0);
+
+        if (tables.length === 0) {
+            console.error('❌ CRITICAL: SiteSettings table does not exist for grand opening!');
+            const defaultDate = new Date();
+            defaultDate.setDate(defaultDate.getDate() + 100);
+            return res.json({
+                success: true,
+                date: defaultDate.toISOString().split('T')[0]
+            });
+        }
+
         // Try both key formats for backward compatibility
         const [rows] = await db.query(
             'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?)',
             ['grand_opening_date', 'grand-opening-date']
         );
+        console.log('🔧 CRITICAL: grand_opening_date query result:', rows);
 
         if (rows.length === 0) {
+            console.log('⚠️ CRITICAL: No grand_opening_date found in database, returning default');
             // Return default date (100 days from now)
             const defaultDate = new Date();
             defaultDate.setDate(defaultDate.getDate() + 100);

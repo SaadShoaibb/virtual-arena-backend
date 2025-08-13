@@ -16,13 +16,29 @@ router.get('/grand_opening_date', getGrandOpeningDate);
 router.get('/countdown-enabled', async (req, res) => {
     const db = require('../config/db');
     try {
+        console.log('🔧 CRITICAL: Fetching countdown_enabled setting...');
+
+        // Check if table exists
+        const [tables] = await db.query("SHOW TABLES LIKE 'SiteSettings'");
+        console.log('🔧 CRITICAL: SiteSettings table exists:', tables.length > 0);
+
+        if (tables.length === 0) {
+            console.error('❌ CRITICAL: SiteSettings table does not exist!');
+            return res.json({ success: true, setting: { setting_value: 'true' } });
+        }
+
         const [rows] = await db.query(
             'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?) LIMIT 1',
             ['countdown_enabled', 'countdown-enabled']
         );
-        res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
+        console.log('🔧 CRITICAL: countdown_enabled query result:', rows);
+
+        const result = rows[0] || { setting_value: 'true' };
+        console.log('🔧 CRITICAL: Returning countdown_enabled:', result);
+
+        res.json({ success: true, setting: result });
     } catch (e) {
-        console.error('Error fetching countdown_enabled:', e);
+        console.error('❌ CRITICAL: Error fetching countdown_enabled:', e);
         res.json({ success: true, setting: { setting_value: 'true' } });
     }
 });
@@ -31,13 +47,15 @@ router.get('/countdown-enabled', async (req, res) => {
 router.get('/countdown_enabled', async (req, res) => {
     const db = require('../config/db');
     try {
+        console.log('🔧 CRITICAL: Fetching countdown_enabled setting (underscore version)...');
         const [rows] = await db.query(
             'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?) LIMIT 1',
             ['countdown_enabled', 'countdown-enabled']
         );
+        console.log('🔧 CRITICAL: countdown_enabled (underscore) query result:', rows);
         res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
     } catch (e) {
-        console.error('Error fetching countdown_enabled:', e);
+        console.error('❌ CRITICAL: Error fetching countdown_enabled (underscore):', e);
         res.json({ success: true, setting: { setting_value: 'true' } });
     }
 });

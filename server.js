@@ -44,6 +44,58 @@ app.get('/', (req, res) => {
   res.send("<h1>Virtual Arena Backend is working correctly</h1>");
 });
 
+// Diagnostic route to check database status
+app.get('/api/v1/diagnostic', async (req, res) => {
+  try {
+    const mySqlPool = require('./config/db');
+
+    // Check database connection
+    const [connectionTest] = await mySqlPool.query('SELECT 1 as test');
+
+    // Check if tables exist
+    const [tables] = await mySqlPool.query('SHOW TABLES');
+    const tableNames = tables.map(t => Object.values(t)[0]);
+
+    // Check SiteSettings
+    let siteSettings = [];
+    if (tableNames.includes('SiteSettings')) {
+      const [settings] = await mySqlPool.query('SELECT * FROM SiteSettings');
+      siteSettings = settings;
+    }
+
+    // Check Bookings count
+    let bookingsCount = 0;
+    if (tableNames.includes('Bookings')) {
+      const [count] = await mySqlPool.query('SELECT COUNT(*) as count FROM Bookings');
+      bookingsCount = count[0].count;
+    }
+
+    // Check VRSessions count
+    let sessionsCount = 0;
+    if (tableNames.includes('VRSessions')) {
+      const [count] = await mySqlPool.query('SELECT COUNT(*) as count FROM VRSessions');
+      sessionsCount = count[0].count;
+    }
+
+    res.json({
+      success: true,
+      database_connected: true,
+      tables: tableNames,
+      site_settings: siteSettings,
+      bookings_count: bookingsCount,
+      sessions_count: sessionsCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Diagnostic error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 8080;
 
@@ -74,16 +126,42 @@ mySqlPool.query('SELECT 1')
       const countdownDate = new Date();
       countdownDate.setDate(countdownDate.getDate() + 100);
 
-      await mySqlPool.query(`
-        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
-        VALUES ('grand_opening_date', ?, 'date', 'Grand opening countdown target date')
-      `, [countdownDate.toISOString()]);
+      console.log('🔧 CRITICAL: Inserting countdown settings...');
+      console.log('🔧 CRITICAL: Countdown date:', countdownDate.toISOString());
 
-      await mySqlPool.query(`
-        INSERT IGNORE INTO SiteSettings (setting_key, setting_value, setting_type, description)
-        VALUES ('countdown_enabled', 'true', 'boolean', 'Enable/disable countdown banner')
+      const [existingDate] = await mySqlPool.query(`
+        SELECT * FROM SiteSettings WHERE setting_key = 'grand_opening_date'
       `);
-      console.log('✅ CRITICAL: Default countdown settings inserted');
+
+      if (existingDate.length === 0) {
+        await mySqlPool.query(`
+          INSERT INTO SiteSettings (setting_key, setting_value, setting_type, description)
+          VALUES ('grand_opening_date', ?, 'date', 'Grand opening countdown target date')
+        `, [countdownDate.toISOString()]);
+        console.log('✅ CRITICAL: Inserted grand_opening_date');
+      } else {
+        console.log('ℹ️ CRITICAL: grand_opening_date already exists:', existingDate[0].setting_value);
+      }
+
+      const [existingEnabled] = await mySqlPool.query(`
+        SELECT * FROM SiteSettings WHERE setting_key = 'countdown_enabled'
+      `);
+
+      if (existingEnabled.length === 0) {
+        await mySqlPool.query(`
+          INSERT INTO SiteSettings (setting_key, setting_value, setting_type, description)
+          VALUES ('countdown_enabled', 'true', 'boolean', 'Enable/disable countdown banner')
+        `);
+        console.log('✅ CRITICAL: Inserted countdown_enabled');
+      } else {
+        console.log('ℹ️ CRITICAL: countdown_enabled already exists:', existingEnabled[0].setting_value);
+      }
+
+      // Verify all settings
+      const [allSettings] = await mySqlPool.query('SELECT * FROM SiteSettings');
+      console.log('📋 CRITICAL: All site settings after initialization:', allSettings);
+
+      console.log('✅ CRITICAL: Default countdown settings processed');
     } catch (error) {
       console.error('❌ CRITICAL ERROR creating SiteSettings:', error);
     }
@@ -253,15 +331,34 @@ mySqlPool.query('SELECT 1')
 
     // CRITICAL: Ensure Bookings table has all necessary columns for enhanced booking
     try {
-      await mySqlPool.query(`
-        ALTER TABLE Bookings
-        ADD COLUMN IF NOT EXISTS pass_id INT NULL,
-        ADD COLUMN IF NOT EXISTS booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session',
-        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS time_slots JSON NULL,
-        ADD COLUMN IF NOT EXISTS checkout_session_id VARCHAR(255) NULL,
-        ADD COLUMN IF NOT EXISTS payment_intent_id VARCHAR(255) NULL
-      `);
+      console.log('🔧 CRITICAL: Adding enhanced booking columns to Bookings table...');
+
+      // Add columns one by one to avoid MySQL syntax issues
+      const columnsToAdd = [
+        { name: 'pass_id', sql: 'ALTER TABLE Bookings ADD COLUMN pass_id INT NULL' },
+        { name: 'booking_type', sql: "ALTER TABLE Bookings ADD COLUMN booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session'" },
+        { name: 'duration_hours', sql: 'ALTER TABLE Bookings ADD COLUMN duration_hours DECIMAL(3,1) DEFAULT NULL' },
+        { name: 'time_slots', sql: 'ALTER TABLE Bookings ADD COLUMN time_slots JSON NULL' },
+        { name: 'checkout_session_id', sql: 'ALTER TABLE Bookings ADD COLUMN checkout_session_id VARCHAR(255) NULL' },
+        { name: 'payment_intent_id', sql: 'ALTER TABLE Bookings ADD COLUMN payment_intent_id VARCHAR(255) NULL' }
+      ];
+
+      for (const col of columnsToAdd) {
+        try {
+          // Check if column exists first
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM Bookings LIKE '${col.name}'`);
+
+          if (columns.length === 0) {
+            await mySqlPool.query(col.sql);
+            console.log(`✅ CRITICAL: Added column: ${col.name}`);
+          } else {
+            console.log(`ℹ️ Column already exists: ${col.name}`);
+          }
+        } catch (error) {
+          console.log(`⚠️ Error adding ${col.name}:`, error.message);
+        }
+      }
+
       console.log('✅ CRITICAL: Enhanced Bookings table with all necessary columns');
 
       // Add foreign key constraint for pass_id if it doesn't exist
@@ -1100,15 +1197,26 @@ async function applyBookingSystemUpdates() {
       console.log('✅ Inserted default group discounts');
 
       // Enhanced VRSessions table with more fields for flexible duration and pricing
-      await mySqlPool.query(`
-        ALTER TABLE VRSessions
-        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT 0.25,
-        ADD COLUMN IF NOT EXISTS min_duration_hours DECIMAL(3,1) DEFAULT 0.25,
-        ADD COLUMN IF NOT EXISTS max_duration_hours DECIMAL(3,1) DEFAULT 4.0,
-        ADD COLUMN IF NOT EXISTS hourly_rate DECIMAL(10,2) DEFAULT 0.00,
-        ADD COLUMN IF NOT EXISTS setup_time_minutes INT DEFAULT 5,
-        ADD COLUMN IF NOT EXISTS cleanup_time_minutes INT DEFAULT 5
-      `);
+      const vrSessionColumns = [
+        { name: 'duration_hours', sql: 'ALTER TABLE VRSessions ADD COLUMN duration_hours DECIMAL(3,1) DEFAULT 0.25' },
+        { name: 'min_duration_hours', sql: 'ALTER TABLE VRSessions ADD COLUMN min_duration_hours DECIMAL(3,1) DEFAULT 0.25' },
+        { name: 'max_duration_hours', sql: 'ALTER TABLE VRSessions ADD COLUMN max_duration_hours DECIMAL(3,1) DEFAULT 4.0' },
+        { name: 'hourly_rate', sql: 'ALTER TABLE VRSessions ADD COLUMN hourly_rate DECIMAL(10,2) DEFAULT 0.00' },
+        { name: 'setup_time_minutes', sql: 'ALTER TABLE VRSessions ADD COLUMN setup_time_minutes INT DEFAULT 5' },
+        { name: 'cleanup_time_minutes', sql: 'ALTER TABLE VRSessions ADD COLUMN cleanup_time_minutes INT DEFAULT 5' }
+      ];
+
+      for (const col of vrSessionColumns) {
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM VRSessions LIKE '${col.name}'`);
+          if (columns.length === 0) {
+            await mySqlPool.query(col.sql);
+            console.log(`✅ Added VRSessions column: ${col.name}`);
+          }
+        } catch (error) {
+          console.log(`⚠️ Error adding VRSessions ${col.name}:`, error.message);
+        }
+      }
       console.log('✅ VRSessions table enhanced with duration and pricing fields');
 
       // Create SessionDurationPricing table for flexible pricing
@@ -1128,12 +1236,23 @@ async function applyBookingSystemUpdates() {
       console.log('✅ SessionDurationPricing table created/verified');
 
       // Add hour-based booking fields to Bookings table
-      await mySqlPool.query(`
-        ALTER TABLE Bookings
-        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT 0.25,
-        ADD COLUMN IF NOT EXISTS hourly_rate DECIMAL(10,2) DEFAULT 0.00,
-        ADD COLUMN IF NOT EXISTS booking_type ENUM('session', 'hourly') DEFAULT 'session'
-      `);
+      const bookingColumns = [
+        { name: 'duration_hours', sql: 'ALTER TABLE Bookings ADD COLUMN duration_hours DECIMAL(3,1) DEFAULT 0.25' },
+        { name: 'hourly_rate', sql: 'ALTER TABLE Bookings ADD COLUMN hourly_rate DECIMAL(10,2) DEFAULT 0.00' },
+        { name: 'booking_type', sql: "ALTER TABLE Bookings ADD COLUMN booking_type ENUM('session', 'hourly') DEFAULT 'session'" }
+      ];
+
+      for (const col of bookingColumns) {
+        try {
+          const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM Bookings LIKE '${col.name}'`);
+          if (columns.length === 0) {
+            await mySqlPool.query(col.sql);
+            console.log(`✅ Added Bookings column: ${col.name}`);
+          }
+        } catch (error) {
+          console.log(`⚠️ Error adding Bookings ${col.name}:`, error.message);
+        }
+      }
       console.log('✅ Bookings table enhanced with hour-based booking fields');
 
     } catch (error) {

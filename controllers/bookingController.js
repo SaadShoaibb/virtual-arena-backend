@@ -213,7 +213,25 @@ const updateBookingStatus = async (bookingId) => {
 // ✅ Get all bookings
 const getAllBookings = async (req, res) => {
     try {
-        console.log('📋 Fetching all bookings...');
+        console.log('📋 CRITICAL: Fetching all bookings from database...');
+        console.log('📋 CRITICAL: Database connection status:', !!db);
+
+        // First, check if tables exist
+        try {
+            const [tables] = await db.query("SHOW TABLES LIKE 'Bookings'");
+            console.log('📋 CRITICAL: Bookings table exists:', tables.length > 0);
+
+            if (tables.length === 0) {
+                console.error('❌ CRITICAL: Bookings table does not exist!');
+                return res.status(500).json({
+                    success: false,
+                    message: 'Bookings table does not exist',
+                    bookings: []
+                });
+            }
+        } catch (tableError) {
+            console.error('❌ CRITICAL: Error checking table existence:', tableError);
+        }
 
         // Use basic query that works with existing columns
         const [bookings] = await db.query(`
@@ -229,8 +247,17 @@ const getAllBookings = async (req, res) => {
             LEFT JOIN VRSessions s ON b.session_id = s.session_id
             ORDER BY b.created_at DESC
         `);
+        console.log(`📋 CRITICAL: Found ${bookings.length} bookings in database`);
 
-        console.log(`📋 Found ${bookings.length} bookings`);
+        if (bookings.length > 0) {
+            console.log('📋 CRITICAL: Sample booking:', {
+                booking_id: bookings[0].booking_id,
+                user_name: bookings[0].user_name,
+                session_name: bookings[0].session_name,
+                start_time: bookings[0].start_time,
+                payment_status: bookings[0].payment_status
+            });
+        }
 
         // Update status for each booking
         for (const booking of bookings) {
