@@ -35,7 +35,7 @@ router.put('/enhanced/:sessionId', isAuthenticated, isAdmin, updateSessionEnhanc
 router.get('/duration-pricing/:sessionId', isAuthenticated, isAdmin, getSessionDurationPricing);
 
 // Public routes for frontend
-router.get('/pricing', async (req, res) => {
+router.get('/public/pricing', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM SessionPricing WHERE is_active = TRUE');
         res.json({ success: true, pricing: rows });
@@ -45,7 +45,7 @@ router.get('/pricing', async (req, res) => {
     }
 });
 
-router.get('/group-discounts', async (req, res) => {
+router.get('/public/group-discounts', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM GroupDiscounts WHERE is_active = TRUE ORDER BY min_players ASC');
         res.json({ success: true, discounts: rows });

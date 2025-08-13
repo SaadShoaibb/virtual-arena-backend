@@ -1,20 +1,40 @@
 const db = require('../config/db'); // Import your DB connection
 
-// ✅ Create a new session
+// ✅ Create a new session with pricing
 const createSession = async (req, res) => {
     try {
-        const { name, description, duration_minutes, max_players, price, is_active } = req.body;
+        const { name, description, duration_minutes, max_players, price_1_session, price_2_sessions, is_active } = req.body;
 
+        // Insert the session
         const [result] = await db.query(`
-            INSERT INTO VRSessions (name, description, duration_minutes, max_players, price, is_active) 
+            INSERT INTO VRSessions (name, description, duration_minutes, max_players, price, is_active)
             VALUES (?, ?, ?, ?, ?, ?)`,
-            [name, description, duration_minutes, max_players, price, is_active || true]
+            [name, description, duration_minutes, max_players, price_1_session || 0, is_active || true]
         );
+
+        const sessionId = result.insertId;
+
+        // Create pricing entries for 1 and 2 sessions
+        if (price_1_session) {
+            await db.query(`
+                INSERT INTO SessionPricing (session_id, session_count, price, is_active)
+                VALUES (?, 1, ?, ?)`,
+                [sessionId, price_1_session, true]
+            );
+        }
+
+        if (price_2_sessions) {
+            await db.query(`
+                INSERT INTO SessionPricing (session_id, session_count, price, is_active)
+                VALUES (?, 2, ?, ?)`,
+                [sessionId, price_2_sessions, true]
+            );
+        }
 
         res.status(201).json({
             success: true,
-            message: 'Session created successfully',
-            session_id: result.insertId,
+            message: 'Session created successfully with pricing',
+            session_id: sessionId,
         });
     } catch (error) {
         console.error(error);

@@ -55,16 +55,17 @@ const getSiteSetting = async (req, res) => {
 // Get grand opening date specifically
 const getGrandOpeningDate = async (req, res) => {
     try {
+        // Try both key formats for backward compatibility
         const [rows] = await db.query(
-            'SELECT setting_value FROM SiteSettings WHERE setting_key = ?',
-            ['grand_opening_date']
+            'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?)',
+            ['grand_opening_date', 'grand-opening-date']
         );
 
         if (rows.length === 0) {
             // Return default date (100 days from now)
             const defaultDate = new Date();
             defaultDate.setDate(defaultDate.getDate() + 100);
-            
+
             return res.json({
                 success: true,
                 date: defaultDate.toISOString().split('T')[0]
@@ -90,6 +91,8 @@ const updateSiteSetting = async (req, res) => {
         const { key } = req.params;
         const { value, type = 'string', description } = req.body;
 
+        console.log(`🔧 Updating site setting: ${key}`, { value, type, description });
+
         // Convert value to string for storage
         let stringValue = value;
         if (type === 'boolean') {
@@ -101,6 +104,8 @@ const updateSiteSetting = async (req, res) => {
             stringValue = new Date(value).toISOString();
         }
 
+        console.log(`📝 Converted value for storage: ${stringValue}`);
+
         // Check if setting exists
         const [existing] = await db.query(
             'SELECT setting_id FROM SiteSettings WHERE setting_key = ?',
@@ -109,24 +114,28 @@ const updateSiteSetting = async (req, res) => {
 
         if (existing.length > 0) {
             // Update existing setting
+            console.log(`🔄 Updating existing setting: ${key}`);
             await db.query(
                 'UPDATE SiteSettings SET setting_value = ?, setting_type = ?, description = ? WHERE setting_key = ?',
                 [stringValue, type, description, key]
             );
         } else {
             // Create new setting
+            console.log(`➕ Creating new setting: ${key}`);
             await db.query(
                 'INSERT INTO SiteSettings (setting_key, setting_value, setting_type, description) VALUES (?, ?, ?, ?)',
                 [key, stringValue, type, description]
             );
         }
 
+        console.log(`✅ Successfully updated site setting: ${key} = ${stringValue}`);
+
         res.json({
             success: true,
             message: 'Site setting updated successfully'
         });
     } catch (error) {
-        console.error('Error updating site setting:', error);
+        console.error('❌ Error updating site setting:', error);
         res.status(500).json({
             success: false,
             message: 'Failed to update site setting'

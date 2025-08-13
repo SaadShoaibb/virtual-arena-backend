@@ -163,23 +163,55 @@ mySqlPool.query('SELECT 1')
       `);
       console.log('✅ CRITICAL: TimePasses table created/verified');
 
-      // Insert default time passes
-      const defaultPasses = [
-        ['1-Hour Pass', 1, 35.00, 'Unlimited access to all experiences for 1 hour'],
-        ['2-Hour Pass', 2, 55.00, 'Unlimited access to all experiences for 2 hours'],
-        ['Half-Day Pass', 4, 85.00, 'Unlimited access to all experiences for 4 hours'],
-        ['Full-Day Pass', 8, 120.00, 'Unlimited access to all experiences for 8 hours']
-      ];
+      // Insert default time passes (only if none exist)
+      const [existingPasses] = await mySqlPool.query('SELECT COUNT(*) as count FROM TimePasses WHERE is_active = TRUE');
+      if (existingPasses[0].count === 0) {
+        console.log('🔧 Inserting default time passes...');
+        const defaultPasses = [
+          ['1-Hour Pass', 1, 35.00, 'Unlimited access to all experiences for 1 hour'],
+          ['2-Hour Pass', 2, 55.00, 'Unlimited access to all experiences for 2 hours'],
+          ['Half-Day Pass', 4, 85.00, 'Unlimited access to all experiences for 4 hours'],
+          ['Full-Day Pass', 8, 120.00, 'Unlimited access to all experiences for 8 hours']
+        ];
 
-      for (const [name, duration, price, description] of defaultPasses) {
-        try {
-          await mySqlPool.query(`
-            INSERT IGNORE INTO TimePasses (name, duration_hours, price, description, is_active)
-            VALUES (?, ?, ?, ?, TRUE)
-          `, [name, duration, price, description]);
-        } catch (error) {
-          // Ignore duplicate entries
+        for (const [name, duration, price, description] of defaultPasses) {
+          try {
+            // Check if this specific pass already exists
+            const [existing] = await mySqlPool.query(
+              'SELECT pass_id FROM TimePasses WHERE name = ? AND duration_hours = ?',
+              [name, duration]
+            );
+
+            if (existing.length === 0) {
+              await mySqlPool.query(`
+                INSERT INTO TimePasses (name, duration_hours, price, description, is_active)
+                VALUES (?, ?, ?, ?, TRUE)
+              `, [name, duration, price, description]);
+              console.log(`✅ Added default pass: ${name}`);
+            } else {
+              console.log(`ℹ️ Pass already exists: ${name}`);
+            }
+          } catch (error) {
+            console.log(`⚠️ Could not add pass ${name}:`, error.message);
+          }
         }
+      } else {
+        console.log('ℹ️ Active time passes already exist, skipping default insertion');
+      }
+
+      // Clean up any duplicate passes
+      try {
+        console.log('🧹 Cleaning up duplicate time passes...');
+        await mySqlPool.query(`
+          DELETE t1 FROM TimePasses t1
+          INNER JOIN TimePasses t2
+          WHERE t1.pass_id > t2.pass_id
+          AND t1.name = t2.name
+          AND t1.duration_hours = t2.duration_hours
+        `);
+        console.log('✅ Cleaned up duplicate time passes');
+      } catch (error) {
+        console.log('⚠️ Could not clean up duplicates:', error.message);
       }
       console.log('✅ CRITICAL: Default time passes inserted');
     } catch (error) {
@@ -590,19 +622,110 @@ async function applyBookingSystemUpdates() {
   try {
     console.log("🔄 Checking enhanced booking system database updates...");
 
-    // Check if updates have already been applied by looking for machine_type field in VRSessions
-    try {
-      const [checkColumns] = await mySqlPool.query(`SHOW COLUMNS FROM VRSessions LIKE 'machine_type';`);
-      if (checkColumns.length > 0) {
-        console.log("ℹ️ Enhanced booking system updates already applied, skipping...");
-        return;
-      }
-    } catch (error) {
-      // Table might not exist yet, continue with updates
-      console.log("ℹ️ VRSessions table not found or accessible, continuing with updates...");
-    }
+    // FORCE migration to run - don't skip for pass bookings
+    console.log("🔧 FORCING migration to run for pass booking support...");
 
     console.log("🔄 Applying enhanced booking system database updates...");
+
+    // 🚨 CRITICAL: Force database schema fixes for pass bookings
+    console.log("🔧 CRITICAL: FORCING database fixes for pass bookings...");
+    console.log("🔧 MANUAL SQL COMMANDS TO RUN:");
+    console.log("ALTER TABLE Bookings ADD COLUMN pass_id INT NULL;");
+    console.log("ALTER TABLE Bookings ADD COLUMN booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session';");
+    console.log("ALTER TABLE Bookings ADD COLUMN duration_hours DECIMAL(3,1) DEFAULT NULL;");
+    console.log("DELETE FROM TimePasses WHERE pass_id NOT IN (SELECT MIN(pass_id) FROM (SELECT pass_id, name, duration_hours FROM TimePasses) AS temp GROUP BY name, duration_hours);");
+
+    // Force add columns with individual checks
+    const columnsToAdd = [
+      { name: 'pass_id', sql: "ALTER TABLE Bookings ADD COLUMN pass_id INT NULL" },
+      { name: 'booking_type', sql: "ALTER TABLE Bookings ADD COLUMN booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session'" },
+      { name: 'duration_hours', sql: "ALTER TABLE Bookings ADD COLUMN duration_hours DECIMAL(3,1) DEFAULT NULL" }
+    ];
+
+    for (const col of columnsToAdd) {
+      try {
+        // Check if column exists first
+        const [columns] = await mySqlPool.query(`SHOW COLUMNS FROM Bookings LIKE '${col.name}'`);
+
+        if (columns.length === 0) {
+          await mySqlPool.query(col.sql);
+          console.log(`✅ CRITICAL: Successfully added column: ${col.name}`);
+        } else {
+          console.log(`ℹ️ Column already exists: ${col.name}`);
+
+          // For booking_type, ensure it includes 'pass'
+          if (col.name === 'booking_type') {
+            try {
+              await mySqlPool.query("ALTER TABLE Bookings MODIFY COLUMN booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session'");
+              console.log(`✅ CRITICAL: Updated booking_type enum to include 'pass'`);
+            } catch (modError) {
+              console.log(`⚠️ Could not update booking_type enum:`, modError.message);
+            }
+          }
+        }
+      } catch (error) {
+        console.log(`❌ CRITICAL: Failed to add ${col.name}:`, error.message);
+        console.log(`🔧 MANUAL SQL: ${col.sql};`);
+      }
+    }
+
+    // Verify all columns exist
+    try {
+      const [allColumns] = await mySqlPool.query('SHOW COLUMNS FROM Bookings');
+      const columnNames = allColumns.map(col => col.Field);
+      const requiredColumns = ['pass_id', 'booking_type', 'duration_hours'];
+      const missingColumns = requiredColumns.filter(col => !columnNames.includes(col));
+
+      if (missingColumns.length === 0) {
+        console.log('✅ CRITICAL: All required columns exist for pass bookings');
+      } else {
+        console.log(`❌ CRITICAL: Missing columns: ${missingColumns.join(', ')}`);
+        console.log('🔧 MANUAL SQL NEEDED:');
+        missingColumns.forEach(col => {
+          const colDef = columnsToAdd.find(c => c.name === col);
+          if (colDef) console.log(colDef.sql + ';');
+        });
+      }
+    } catch (error) {
+      console.log('❌ Could not verify columns:', error.message);
+    }
+
+    // Clean up duplicate passes
+    try {
+      console.log("🧹 CRITICAL: Cleaning up duplicate time passes...");
+
+      // First, get all passes and identify duplicates
+      const [allPasses] = await mySqlPool.query('SELECT pass_id, name, duration_hours FROM TimePasses ORDER BY pass_id');
+      console.log(`📋 Found ${allPasses.length} total passes`);
+
+      // Group by name and duration to find duplicates
+      const passGroups = {};
+      for (const pass of allPasses) {
+        const key = `${pass.name}_${pass.duration_hours}`;
+        if (!passGroups[key]) {
+          passGroups[key] = [];
+        }
+        passGroups[key].push(pass.pass_id);
+      }
+
+      // Delete duplicates (keep the first one)
+      for (const [key, passIds] of Object.entries(passGroups)) {
+        if (passIds.length > 1) {
+          const toDelete = passIds.slice(1); // Keep first, delete rest
+          console.log(`🗑️ Deleting duplicate passes for ${key}: ${toDelete.join(', ')}`);
+
+          for (const passId of toDelete) {
+            await mySqlPool.query('DELETE FROM TimePasses WHERE pass_id = ?', [passId]);
+          }
+        }
+      }
+
+      console.log("✅ CRITICAL: Cleaned up duplicate time passes");
+    } catch (error) {
+      console.log("⚠️ Could not clean up duplicate passes:", error.message);
+      console.log("🔧 MANUAL SQL TO CLEAN DUPLICATES:");
+      console.log("DELETE t1 FROM TimePasses t1 INNER JOIN TimePasses t2 WHERE t1.pass_id > t2.pass_id AND t1.name = t2.name AND t1.duration_hours = t2.duration_hours;");
+    }
 
     // 1. Add guest booking fields to Bookings table
     const bookingFields = [
@@ -622,6 +745,16 @@ async function applyBookingSystemUpdates() {
     } catch (error) {
       console.log("ℹ️ Bookings.user_id already nullable or modification not needed");
     }
+
+    // Allow session_id to be NULL for time pass bookings
+    try {
+      await mySqlPool.query('ALTER TABLE Bookings MODIFY COLUMN session_id INT NULL;');
+      console.log("✅ Made Bookings.session_id nullable");
+    } catch (error) {
+      console.log("ℹ️ Bookings.session_id already nullable or modification not needed");
+    }
+
+
 
     // Add all booking fields in one batch
     for (const field of bookingFields) {
@@ -1046,14 +1179,14 @@ async function populateVRSessions() {
         );
         console.log(`✅ Created VR session: ${session.name}`);
       } else {
-        // Update existing session to ensure data is current and CORRECT PRICING
+        // Update existing session but preserve admin-set pricing
         await mySqlPool.query(
           `UPDATE VRSessions
-           SET description = ?, price = ?, duration_minutes = ?, max_players = ?, machine_type = ?, is_active = ?
+           SET description = ?, duration_minutes = ?, max_players = ?, machine_type = ?, is_active = ?
            WHERE name = ?`,
           [
             session.description,
-            session.price, // This ensures correct pricing is always applied
+            // Removed price update to preserve admin-set pricing
             session.duration_minutes,
             session.max_players,
             session.machine_type,
@@ -1061,7 +1194,7 @@ async function populateVRSessions() {
             session.name
           ]
         );
-        console.log(`✅ FIXED PRICING for VR session: ${session.name} - Price: $${session.price}`);
+        console.log(`✅ Updated VR session: ${session.name} (preserved admin pricing)`);
       }
     }
 
@@ -1100,27 +1233,28 @@ async function populateVRSessions() {
       console.log(`⚠️ Session cleanup warning: ${cleanupError.message}`);
     }
 
+    // DISABLED: Automatic pricing fixes to allow admin control over pricing
     // 🚨 CRITICAL FIX: Ensure all session prices are correct (fix 10x pricing bug)
-    console.log("🔧 Applying critical pricing fixes...");
-    const pricingFixes = [
-      { name: 'Free Roaming Arena', correctPrice: 12.00 },
-      { name: 'UFO Spaceship Cinema', correctPrice: 9.00 },
-      { name: 'VR 360', correctPrice: 9.00 },
-      { name: 'VR Battle', correctPrice: 9.00 },
-      { name: 'VR Warrior', correctPrice: 7.00 },
-      { name: 'VR Cat', correctPrice: 6.00 },
-      { name: 'Photo Booth', correctPrice: 6.00 }
-    ];
+    // console.log("🔧 Applying critical pricing fixes...");
+    // const pricingFixes = [
+    //   { name: 'Free Roaming Arena', correctPrice: 12.00 },
+    //   { name: 'UFO Spaceship Cinema', correctPrice: 9.00 },
+    //   { name: 'VR 360', correctPrice: 9.00 },
+    //   { name: 'VR Battle', correctPrice: 9.00 },
+    //   { name: 'VR Warrior', correctPrice: 7.00 },
+    //   { name: 'VR Cat', correctPrice: 6.00 },
+    //   { name: 'Photo Booth', correctPrice: 6.00 }
+    // ];
 
-    for (const fix of pricingFixes) {
-      const [result] = await mySqlPool.query(
-        'UPDATE VRSessions SET price = ? WHERE name = ?',
-        [fix.correctPrice, fix.name]
-      );
-      if (result.affectedRows > 0) {
-        console.log(`🔧 PRICING FIX: ${fix.name} = $${fix.correctPrice}`);
-      }
-    }
+    // for (const fix of pricingFixes) {
+    //   const [result] = await mySqlPool.query(
+    //     'UPDATE VRSessions SET price = ? WHERE name = ?',
+    //     [fix.correctPrice, fix.name]
+    //   );
+    //   if (result.affectedRows > 0) {
+    //     console.log(`🔧 PRICING FIX: ${fix.name} = $${fix.correctPrice}`);
+    //   }
+    // }
 
     console.log("✅ VR Sessions population and cleanup completed successfully!");
     console.log("🚨 CRITICAL PRICING BUG FIXED - All session prices corrected");

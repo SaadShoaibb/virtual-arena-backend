@@ -4,7 +4,7 @@ const isAuthenticated = require('../middlewares/authMiddleware')
 const { addDeal, getDeals, updateDeal, deleteDeal } = require('../controllers/dealsController');
 const upload = require('../middlewares/uploadMiddleware');
 const isAdmin = require('../middlewares/adminMiddleware');
-const { getSessionById, getAllSessions, updateSession } = require('../controllers/sessionsController');
+const { getSessionById, getAllSessions, updateSession, createSession } = require('../controllers/sessionsController');
 const { getAllBookings, updateBooking, deleteBooking, getBookingById } = require('../controllers/bookingController');
 const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration, updateRegistration } = require('../controllers/tournamentController');
 const { addEvent, getAllEvents, getEventById, updateEvent, deleteEvent, getAllEventRegistrations, getEventRegistrationById, updateEventRegistration, deleteEventRegistration } = require('../controllers/eventsController');
@@ -19,10 +19,11 @@ const { runMigrations } = require('../controllers/tablesController');
 
 const router = express.Router()
 
-// VR Sessions (Read-only - managed automatically from pricing calculator)
+// VR Sessions - Now fully manageable from admin panel
+router.post('/add-session',isAuthenticated,isAdmin,createSession)
 router.get('/get-sessions',isAuthenticated,isAdmin,getAllSessions)
 router.get("/get-session/:session_id",isAuthenticated,isAdmin,getSessionById)
-router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession) // Keep edit for price adjustments
+router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession)
 
 
 // booking Sessions

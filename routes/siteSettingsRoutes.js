@@ -12,12 +12,27 @@ const isAdmin = require('../middlewares/adminMiddleware');
 
 // Public routes
 router.get('/grand-opening-date', getGrandOpeningDate);
+router.get('/grand_opening_date', getGrandOpeningDate);
 router.get('/countdown-enabled', async (req, res) => {
     const db = require('../config/db');
     try {
         const [rows] = await db.query(
-            'SELECT setting_value FROM SiteSettings WHERE setting_key = ? LIMIT 1',
-            ['countdown_enabled']
+            'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?) LIMIT 1',
+            ['countdown_enabled', 'countdown-enabled']
+        );
+        res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
+    } catch (e) {
+        res.json({ success: true, setting: { setting_value: 'true' } });
+    }
+});
+
+// Also support the underscore version
+router.get('/countdown_enabled', async (req, res) => {
+    const db = require('../config/db');
+    try {
+        const [rows] = await db.query(
+            'SELECT setting_value FROM SiteSettings WHERE setting_key IN (?, ?) LIMIT 1',
+            ['countdown_enabled', 'countdown-enabled']
         );
         res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
     } catch (e) {
