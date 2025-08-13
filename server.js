@@ -63,11 +63,17 @@ app.get('/api/v1/diagnostic', async (req, res) => {
       siteSettings = settings;
     }
 
-    // Check Bookings count
+    // Check Bookings count and sample data
     let bookingsCount = 0;
+    let sampleBookings = [];
     if (tableNames.includes('Bookings')) {
       const [count] = await mySqlPool.query('SELECT COUNT(*) as count FROM Bookings');
       bookingsCount = count[0].count;
+
+      if (bookingsCount > 0) {
+        const [sample] = await mySqlPool.query('SELECT * FROM Bookings LIMIT 3');
+        sampleBookings = sample;
+      }
     }
 
     // Check VRSessions count
@@ -77,13 +83,34 @@ app.get('/api/v1/diagnostic', async (req, res) => {
       sessionsCount = count[0].count;
     }
 
+    // Test API endpoints
+    const apiTests = {
+      countdown_enabled: false,
+      grand_opening_date: false,
+      bookings_api: false
+    };
+
+    try {
+      const [countdownTest] = await mySqlPool.query("SELECT * FROM SiteSettings WHERE setting_key = 'countdown_enabled'");
+      apiTests.countdown_enabled = countdownTest.length > 0;
+    } catch (e) {}
+
+    try {
+      const [dateTest] = await mySqlPool.query("SELECT * FROM SiteSettings WHERE setting_key = 'grand_opening_date'");
+      apiTests.grand_opening_date = dateTest.length > 0;
+    } catch (e) {}
+
+    apiTests.bookings_api = tableNames.includes('Bookings');
+
     res.json({
       success: true,
       database_connected: true,
       tables: tableNames,
       site_settings: siteSettings,
       bookings_count: bookingsCount,
+      sample_bookings: sampleBookings,
       sessions_count: sessionsCount,
+      api_tests: apiTests,
       timestamp: new Date().toISOString()
     });
   } catch (error) {

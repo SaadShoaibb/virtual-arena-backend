@@ -29,6 +29,7 @@ router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession)
 
 // booking Sessions
 router.get('/get-bookings/',isAuthenticated,isAdmin,getAllBookings)
+router.get('/get-Bookings/',isAuthenticated,isAdmin,getAllBookings) // Support both cases for compatibility
 router.put('/update-booking/:booking_id/',isAuthenticated,isAdmin,updateBooking)
 router.get('/get-booking/:booking_id/',isAuthenticated,isAdmin,getBookingById)
 router.delete('/delete-booking/:booking_id/',isAuthenticated,isAdmin,deleteBooking)
