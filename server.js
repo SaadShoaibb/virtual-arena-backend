@@ -218,6 +218,69 @@ mySqlPool.query('SELECT 1')
       console.error('❌ CRITICAL ERROR creating TimePasses:', error);
     }
 
+    // CRITICAL: Create PassPricing table to link passes with pricing management
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS PassPricing (
+          pricing_id INT AUTO_INCREMENT PRIMARY KEY,
+          pass_id INT NOT NULL,
+          price DECIMAL(10,2) NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (pass_id) REFERENCES TimePasses(pass_id) ON DELETE CASCADE,
+          UNIQUE KEY unique_pass_pricing (pass_id)
+        )
+      `);
+      console.log('✅ CRITICAL: PassPricing table created/verified');
+
+      // Sync existing passes with PassPricing table
+      const [existingPasses] = await mySqlPool.query('SELECT pass_id, price FROM TimePasses WHERE is_active = TRUE');
+      for (const pass of existingPasses) {
+        try {
+          await mySqlPool.query(`
+            INSERT IGNORE INTO PassPricing (pass_id, price)
+            VALUES (?, ?)
+          `, [pass.pass_id, pass.price]);
+        } catch (error) {
+          // Ignore duplicate entries
+        }
+      }
+      console.log('✅ CRITICAL: Synced passes with PassPricing table');
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating PassPricing:', error);
+    }
+
+    // CRITICAL: Ensure Bookings table has all necessary columns for enhanced booking
+    try {
+      await mySqlPool.query(`
+        ALTER TABLE Bookings
+        ADD COLUMN IF NOT EXISTS pass_id INT NULL,
+        ADD COLUMN IF NOT EXISTS booking_type ENUM('session', 'hourly', 'pass') DEFAULT 'session',
+        ADD COLUMN IF NOT EXISTS duration_hours DECIMAL(3,1) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS time_slots JSON NULL,
+        ADD COLUMN IF NOT EXISTS checkout_session_id VARCHAR(255) NULL,
+        ADD COLUMN IF NOT EXISTS payment_intent_id VARCHAR(255) NULL
+      `);
+      console.log('✅ CRITICAL: Enhanced Bookings table with all necessary columns');
+
+      // Add foreign key constraint for pass_id if it doesn't exist
+      try {
+        await mySqlPool.query(`
+          ALTER TABLE Bookings
+          ADD CONSTRAINT fk_bookings_pass_id
+          FOREIGN KEY (pass_id) REFERENCES TimePasses(pass_id)
+          ON DELETE SET NULL
+        `);
+        console.log('✅ CRITICAL: Added foreign key constraint for pass_id');
+      } catch (error) {
+        // Constraint might already exist, ignore error
+        console.log('ℹ️ Foreign key constraint for pass_id already exists or could not be added');
+      }
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR enhancing Bookings table:', error);
+    }
+
     // CRITICAL: Setup default session pricing
     try {
       // Wait a moment for sessions to be created

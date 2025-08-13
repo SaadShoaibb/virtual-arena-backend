@@ -56,6 +56,16 @@ router.get('/public/group-discounts', async (req, res) => {
 });
 
 // Admin routes for group discounts management
+router.get('/group-discounts', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM GroupDiscounts ORDER BY min_players ASC');
+        res.json({ success: true, discounts: rows });
+    } catch (error) {
+        console.error('Error fetching group discounts:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch group discounts' });
+    }
+});
+
 router.put('/group-discounts/:id', isAuthenticated, isAdmin, async (req, res) => {
     try {
         const { id } = req.params;
@@ -118,6 +128,31 @@ router.put('/admin-pricing', isAuthenticated, isAdmin, async (req, res) => {
     } catch (error) {
         console.error('Error updating session pricing:', error);
         res.status(500).json({ success: false, message: 'Failed to update session pricing' });
+    }
+});
+
+// Update pass pricing from pricing management
+router.put('/pass-pricing/:passId', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const { passId } = req.params;
+        const { price } = req.body;
+
+        // Update the pass price in TimePasses table
+        await db.query(
+            'UPDATE TimePasses SET price = ? WHERE pass_id = ?',
+            [price, passId]
+        );
+
+        // Also update PassPricing table if it exists
+        await db.query(
+            'UPDATE PassPricing SET price = ? WHERE pass_id = ?',
+            [price, passId]
+        );
+
+        res.json({ success: true, message: 'Pass pricing updated successfully' });
+    } catch (error) {
+        console.error('Error updating pass pricing:', error);
+        res.status(500).json({ success: false, message: 'Failed to update pass pricing' });
     }
 });
 

@@ -47,6 +47,9 @@ const handleWebhook = async (req, res) => {
       case 'payment_intent.payment_failed':
         await handleFailedPaymentIntent(event.data.object);
         break;
+      case 'payment_intent.canceled':
+        await handleCancelledPaymentIntent(event.data.object);
+        break;
       default:
         console.log(`Unhandled event type: ${event.type}`);
     }
@@ -520,6 +523,52 @@ async function updateEventRegistrationStatus(registration_id, status) {
     console.log(`Event registration ${registration_id} status updated to ${status}`);
   } catch (error) {
     console.error('Error updating event registration status:', error);
+  }
+}
+
+/**
+ * Handle payment_intent.canceled event
+ * This is triggered when a payment intent is cancelled
+ */
+async function handleCancelledPaymentIntent(paymentIntent) {
+  try {
+    console.log('Processing payment_intent.canceled:', paymentIntent.id);
+
+    // Extract metadata from the payment intent
+    const { user_id, entity_id, entity_type } = paymentIntent.metadata || {};
+
+    if (!user_id || !entity_id || !entity_type) {
+      console.error('Missing required metadata in payment intent:', paymentIntent.id);
+      return;
+    }
+
+    // Update payment record in database
+    const updateQuery = `
+      UPDATE Payments
+      SET status = 'cancelled',
+          payment_intent_id = ?,
+          updated_at = NOW()
+      WHERE user_id = ?
+        AND entity_id = ?
+        AND entity_type = ?
+        AND status = 'pending'
+    `;
+
+    await db.query(updateQuery, [paymentIntent.id, user_id, entity_id, entity_type]);
+
+    // Update entity status based on entity_type
+    switch (entity_type) {
+      case 'booking':
+        await updateBookingStatus(entity_id, 'cancelled');
+        break;
+      default:
+        console.log(`No specific handler for entity_type: ${entity_type}`);
+    }
+
+    console.log(`Payment for ${entity_type} ${entity_id} marked as cancelled`);
+  } catch (error) {
+    console.error('Error handling payment_intent.canceled:', error);
+    throw error;
   }
 }
 

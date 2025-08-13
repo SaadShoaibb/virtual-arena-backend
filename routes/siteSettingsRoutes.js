@@ -22,6 +22,7 @@ router.get('/countdown-enabled', async (req, res) => {
         );
         res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
     } catch (e) {
+        console.error('Error fetching countdown_enabled:', e);
         res.json({ success: true, setting: { setting_value: 'true' } });
     }
 });
@@ -36,6 +37,7 @@ router.get('/countdown_enabled', async (req, res) => {
         );
         res.json({ success: true, setting: rows[0] || { setting_value: 'true' } });
     } catch (e) {
+        console.error('Error fetching countdown_enabled:', e);
         res.json({ success: true, setting: { setting_value: 'true' } });
     }
 });

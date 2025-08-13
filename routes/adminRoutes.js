@@ -16,6 +16,7 @@ const { getAllGiftCards, createGiftCard, getGiftCardById, updateGiftCard, delete
 const { getReviewsByEntity } = require('../controllers/reviewController');
 const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransactions, getTopSessions, getUserGrowth, getDashboardStats, getOrderStats } = require('../controllers/dashboardController');
 const { runMigrations } = require('../controllers/tablesController');
+const db = require('../config/db');
 
 const router = express.Router()
 
@@ -31,6 +32,30 @@ router.get('/get-bookings/',isAuthenticated,isAdmin,getAllBookings)
 router.put('/update-booking/:booking_id/',isAuthenticated,isAdmin,updateBooking)
 router.get('/get-booking/:booking_id/',isAuthenticated,isAdmin,getBookingById)
 router.delete('/delete-booking/:booking_id/',isAuthenticated,isAdmin,deleteBooking)
+
+// Update booking payment status
+router.put('/booking/:booking_id/payment-status', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const { booking_id } = req.params;
+        const { payment_status } = req.body;
+
+        console.log(`📋 Updating booking ${booking_id} payment status to ${payment_status}`);
+
+        const [result] = await db.query(
+            'UPDATE Bookings SET payment_status = ? WHERE booking_id = ?',
+            [payment_status, booking_id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Booking not found' });
+        }
+
+        res.json({ success: true, message: 'Payment status updated successfully' });
+    } catch (error) {
+        console.error('Error updating payment status:', error);
+        res.status(500).json({ success: false, message: 'Failed to update payment status' });
+    }
+});
 
 
 // Events
@@ -130,5 +155,97 @@ router.delete('/delete-deal/:id',deleteDeal)
 
 // Manual migration route
 router.post('/run-migrations', isAdmin, runMigrations)
+
+// Time Passes Management
+router.get('/passes', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        console.log('📋 Admin: Fetching all passes...');
+        const [rows] = await db.query('SELECT * FROM TimePasses ORDER BY duration_hours ASC');
+        console.log('📋 Admin: Found passes:', rows.length);
+        res.json({ success: true, passes: rows });
+    } catch (error) {
+        console.error('Error fetching passes:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch passes' });
+    }
+});
+
+router.put('/passes/:id', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, duration_hours, price, description, is_active } = req.body;
+
+        // Validate that id is a number for existing passes
+        if (id !== 'new1' && id !== 'new2' && id !== 'new4' && id !== 'new8' && isNaN(parseInt(id))) {
+            return res.status(400).json({ success: false, message: 'Invalid pass ID' });
+        }
+
+        // If it's a new pass (starts with 'new'), create it
+        if (id.startsWith('new')) {
+            const duration = parseInt(id.replace('new', ''));
+            await db.query(
+                'INSERT INTO TimePasses (name, duration_hours, price, description, is_active) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), price = VALUES(price), description = VALUES(description), is_active = VALUES(is_active)',
+                [name, duration, price, description, is_active]
+            );
+        } else {
+            // Update existing pass
+            await db.query(
+                'UPDATE TimePasses SET name = ?, duration_hours = ?, price = ?, description = ?, is_active = ? WHERE pass_id = ?',
+                [name, duration_hours, price, description, is_active, id]
+            );
+        }
+
+        res.json({ success: true, message: 'Pass updated successfully' });
+    } catch (error) {
+        console.error('Error updating pass:', error);
+        res.status(500).json({ success: false, message: 'Failed to update pass' });
+    }
+});
+
+router.post('/passes', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const { name, duration_hours, price, description, is_active } = req.body;
+
+        await db.query(
+            'INSERT INTO TimePasses (name, duration_hours, price, description, is_active) VALUES (?, ?, ?, ?, ?)',
+            [name, duration_hours, price, description, is_active]
+        );
+
+        res.json({ success: true, message: 'Pass created successfully' });
+    } catch (error) {
+        console.error('Error creating pass:', error);
+        res.status(500).json({ success: false, message: 'Failed to create pass' });
+    }
+});
+
+// Update pass pricing specifically for pricing management
+router.put('/passes/:passId/pricing', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+        const { passId } = req.params;
+        const { price } = req.body;
+
+        console.log(`📋 Updating pass ${passId} price to ${price}`);
+
+        // Update the pass price in TimePasses table
+        const [result] = await db.query(
+            'UPDATE TimePasses SET price = ? WHERE pass_id = ?',
+            [price, passId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Pass not found' });
+        }
+
+        // Also update PassPricing table if it exists
+        await db.query(
+            'UPDATE PassPricing SET price = ? WHERE pass_id = ?',
+            [price, passId]
+        );
+
+        res.json({ success: true, message: 'Pass pricing updated successfully' });
+    } catch (error) {
+        console.error('Error updating pass pricing:', error);
+        res.status(500).json({ success: false, message: 'Failed to update pass pricing' });
+    }
+});
 
 module.exports = router

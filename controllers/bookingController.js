@@ -213,6 +213,9 @@ const updateBookingStatus = async (bookingId) => {
 // ✅ Get all bookings
 const getAllBookings = async (req, res) => {
     try {
+        console.log('📋 Fetching all bookings...');
+
+        // Use basic query that works with existing columns
         const [bookings] = await db.query(`
             SELECT
                 b.*,
@@ -220,39 +223,66 @@ const getAllBookings = async (req, res) => {
                 COALESCE(u.email, b.guest_email) AS user_email,
                 COALESCE(u.phone, b.guest_phone) AS user_phone,
                 s.name AS session_name,
-                b.payment_method,
-                b.is_guest_booking,
-                b.booking_reference
+                s.duration_minutes AS session_duration
             FROM Bookings b
             LEFT JOIN Users u ON b.user_id = u.user_id
-            JOIN VRSessions s ON b.session_id = s.session_id
+            LEFT JOIN VRSessions s ON b.session_id = s.session_id
+            ORDER BY b.created_at DESC
         `);
+
+        console.log(`📋 Found ${bookings.length} bookings`);
 
         // Update status for each booking
         for (const booking of bookings) {
             await updateBookingStatus(booking.booking_id);
         }
 
-        // Fetch updated bookings
-        const [updatedBookings] = await db.query(`
-            SELECT
-                b.*,
-                COALESCE(u.name, b.guest_name) AS user_name,
-                COALESCE(u.email, b.guest_email) AS user_email,
-                COALESCE(u.phone, b.guest_phone) AS user_phone,
-                s.name AS session_name,
-                b.payment_method,
-                b.is_guest_booking,
-                b.booking_reference
-            FROM Bookings b
-            LEFT JOIN Users u ON b.user_id = u.user_id
-            JOIN VRSessions s ON b.session_id = s.session_id
-        `);
+        // Process bookings to calculate correct durations and end times
+        const processedBookings = bookings.map(booking => {
+            try {
+                let calculatedEndTime = booking.end_time;
+                let actualDuration = 0;
+
+                // Check if session_count column exists and use it
+                const sessionCount = booking.session_count || 1;
+
+                // Calculate duration based on session duration and session count
+                if (booking.session_duration) {
+                    actualDuration = booking.session_duration * sessionCount;
+                    if (booking.start_time) {
+                        const startTime = new Date(booking.start_time);
+                        calculatedEndTime = new Date(startTime.getTime() + (actualDuration * 60 * 1000));
+                    }
+                } else if (booking.start_time && booking.end_time) {
+                    // Fallback: calculate from start and end time
+                    const startTime = new Date(booking.start_time);
+                    const endTime = new Date(booking.end_time);
+                    actualDuration = Math.round((endTime - startTime) / (1000 * 60)); // Convert to minutes
+                }
+
+                return {
+                    ...booking,
+                    calculated_end_time: calculatedEndTime,
+                    actual_duration_minutes: actualDuration,
+                    display_duration: actualDuration > 0 ? `${Math.floor(actualDuration / 60)}h ${actualDuration % 60}m` : `${booking.session_duration || 15}min`,
+                    session_count_display: sessionCount
+                };
+            } catch (error) {
+                console.error('Error processing booking:', booking.booking_id, error);
+                return {
+                    ...booking,
+                    calculated_end_time: booking.end_time,
+                    actual_duration_minutes: 0,
+                    display_duration: 'N/A',
+                    session_count_display: 1
+                };
+            }
+        });
 
         res.status(200).json({
             success: true,
             message: 'Bookings retrieved successfully',
-            bookings: updatedBookings,
+            bookings: processedBookings,
         });
     } catch (error) {
         console.error(error);
