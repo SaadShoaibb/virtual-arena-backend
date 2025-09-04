@@ -4,7 +4,7 @@ const isAuthenticated = require('../middlewares/authMiddleware')
 const { addDeal, getDeals, updateDeal, deleteDeal } = require('../controllers/dealsController');
 const upload = require('../middlewares/uploadMiddleware');
 const isAdmin = require('../middlewares/adminMiddleware');
-const { getSessionById, getAllSessions, updateSession, createSession } = require('../controllers/sessionsController');
+const { getSessionById, getAllSessions, updateSession, updateSessionMedia, createSession } = require('../controllers/sessionsController');
 const { getAllBookings, updateBooking, deleteBooking, getBookingById } = require('../controllers/bookingController');
 const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration, updateRegistration } = require('../controllers/tournamentController');
 const { addEvent, getAllEvents, getEventById, updateEvent, deleteEvent, getAllEventRegistrations, getEventRegistrationById, updateEventRegistration, deleteEventRegistration } = require('../controllers/eventsController');
@@ -16,6 +16,7 @@ const { getAllGiftCards, createGiftCard, getGiftCardById, updateGiftCard, delete
 const { getReviewsByEntity } = require('../controllers/reviewController');
 const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransactions, getTopSessions, getUserGrowth, getDashboardStats, getOrderStats } = require('../controllers/dashboardController');
 const { runMigrations } = require('../controllers/tablesController');
+const { getExperienceMedia, getAllExperiencesMedia, addExperienceMedia, updateExperienceMedia, deleteExperienceMedia, updateMediaOrder } = require('../controllers/experienceMediaController');
 const db = require('../config/db');
 
 const router = express.Router()
@@ -25,6 +26,7 @@ router.post('/add-session',isAuthenticated,isAdmin,createSession)
 router.get('/get-sessions',isAuthenticated,isAdmin,getAllSessions)
 router.get("/get-session/:session_id",isAuthenticated,isAdmin,getSessionById)
 router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession)
+router.put('/update-session-media/:session_id',isAuthenticated,isAdmin,updateSessionMedia)
 
 
 // booking Sessions
@@ -156,6 +158,15 @@ router.delete('/delete-deal/:id',deleteDeal)
 
 // Manual migration route
 router.post('/run-migrations', isAdmin, runMigrations)
+
+// Experience Media Management
+router.get('/experience-media', isAuthenticated, isAdmin, getAllExperiencesMedia);
+router.get('/experience-media/:experienceName', getExperienceMedia); // Public route for user pages
+router.get('/public/experience-media/:experienceName', getExperienceMedia); // Public route for user pages
+router.post('/experience-media', upload.single('media'), isAuthenticated, isAdmin, addExperienceMedia);
+router.put('/experience-media/:media_id', isAuthenticated, isAdmin, updateExperienceMedia);
+router.delete('/experience-media/:media_id', isAuthenticated, isAdmin, deleteExperienceMedia);
+router.put('/experience-media/:experience_name/order', isAuthenticated, isAdmin, updateMediaOrder);
 
 // Time Passes Management
 router.get('/passes', isAuthenticated, isAdmin, async (req, res) => {

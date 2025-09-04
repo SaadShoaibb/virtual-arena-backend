@@ -35,6 +35,7 @@ app.use('/api/v1/payment', require('./routes/paymentRoutes'));
 app.use('/api/v1/admin/site-settings', require('./routes/siteSettingsRoutes'));
 app.use('/api/v1/admin/sessions', require('./routes/sessionPricingRoutes'));
 app.use('/api/v1/admin/passes', require('./routes/passesRoutes'));
+app.use('/api/v1/public', require('./routes/userRoutes'));
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -321,6 +322,76 @@ mySqlPool.query('SELECT 1')
       console.log('✅ CRITICAL: Default time passes inserted');
     } catch (error) {
       console.error('❌ CRITICAL ERROR creating TimePasses:', error);
+    }
+
+    // CRITICAL: Ensure ExperienceMedia table exists immediately
+    try {
+      await mySqlPool.query(`
+        CREATE TABLE IF NOT EXISTS ExperienceMedia (
+          media_id INT AUTO_INCREMENT PRIMARY KEY,
+          experience_name VARCHAR(255) NOT NULL,
+          media_type ENUM('image', 'video') NOT NULL,
+          media_url VARCHAR(500) NOT NULL,
+          media_order INT DEFAULT 0,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_experience_name (experience_name),
+          INDEX idx_media_type (media_type),
+          INDEX idx_is_active (is_active)
+        )
+      `);
+      console.log('✅ CRITICAL: ExperienceMedia table created/verified');
+
+      // Insert default media for existing experiences (only if table is empty)
+      const [existingMedia] = await mySqlPool.query('SELECT COUNT(*) as count FROM ExperienceMedia');
+      if (existingMedia[0].count === 0) {
+        console.log('🔧 Inserting default experience media...');
+        const defaultMedia = [
+          // Free Roaming Arena
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena1.jpeg', 1],
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena2.jpeg', 2],
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena3.jpeg', 3],
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena4.jpeg', 4],
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena5.jpeg', 5],
+          ['free-roaming-arena', 'image', '/assets/experiences/arena/arena6.jpeg', 6],
+
+          // VR Battle
+          ['vr-battle', 'image', '/assets/experiences/vrbattle/vrbattle.jpeg', 1],
+
+          // UFO Spaceship
+          ['ufo-spaceship', 'image', '/assets/experiences/ufo/ufo.jpeg', 1],
+
+          // VR 360
+          ['vr-360', 'image', '/assets/experiences/vr360/vr360.jpeg', 1],
+
+          // VR Cat
+          ['vr-cat', 'image', '/assets/experiences/vrcat/vrcat.jpeg', 1],
+
+          // VR Warrior
+          ['vr-warrior', 'image', '/assets/experiences/vrwarrior/vrwarrior.jpeg', 1],
+
+          // Photo Booth
+          ['photo-booth', 'image', '/assets/experiences/photobooth/photobooth.jpeg', 1]
+        ];
+
+        for (const [experience_name, media_type, media_url, media_order] of defaultMedia) {
+          try {
+            await mySqlPool.query(`
+              INSERT INTO ExperienceMedia (experience_name, media_type, media_url, media_order, is_active)
+              VALUES (?, ?, ?, ?, TRUE)
+            `, [experience_name, media_type, media_url, media_order]);
+          } catch (error) {
+            // Ignore duplicate entries
+            console.log(`ℹ️ Skipped duplicate media: ${experience_name} - ${media_url}`);
+          }
+        }
+        console.log('✅ CRITICAL: Default experience media inserted');
+      } else {
+        console.log('ℹ️ Experience media already exists, skipping default insertion');
+      }
+    } catch (error) {
+      console.error('❌ CRITICAL ERROR creating ExperienceMedia:', error);
     }
 
     // CRITICAL: Create PassPricing table to link passes with pricing management

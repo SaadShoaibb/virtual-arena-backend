@@ -155,6 +155,44 @@ const updateSession = async (req, res) => {
     }
 };
 
+// ✅ Update session media (images/videos)
+const updateSessionMedia = async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const { image_url, video_url } = req.body;
+
+        // Check if session exists
+        const [session] = await db.query('SELECT * FROM VRSessions WHERE session_id = ?', [session_id]);
+        if (session.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Session not found'
+            });
+        }
+
+        // Update media fields
+        const [result] = await db.query(`
+            UPDATE VRSessions 
+            SET image_url = ?, video_url = ?
+            WHERE session_id = ?`,
+            [image_url || null, video_url || null, session_id]
+        );
+
+        res.status(200).json({
+            success: true,
+            message: 'Session media updated successfully',
+            session_id: session_id
+        });
+    } catch (error) {
+        console.error('Error updating session media:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating session media',
+            error: error.message
+        });
+    }
+};
+
 // ✅ Delete session by ID
 const deleteSession = async (req, res) => {
     try {
@@ -188,5 +226,6 @@ module.exports = {
     getAllSessions,
     getSessionById,
     updateSession,
+    updateSessionMedia,
     deleteSession,
 };

@@ -11,6 +11,7 @@ const { getWishlistProducts, addToWishlist, removeFromWishlist, getUserAddress, 
 const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead } = require('../controllers/notificationController')
 const { purchaseGiftCard, getUserGiftCards, redeemGiftCard, getAllGiftCards, getUserGiftCardByCode } = require('../controllers/giftCardController')
 const { addReview, getReviewsByEntity, getReviewById } = require('../controllers/reviewController')
+const { getExperienceMedia } = require('../controllers/experienceMediaController')
 
 const router = express.Router()
 // routes
@@ -120,6 +121,9 @@ router.post('/redeem', isAuthenticated,redeemGiftCard);
 router.post('/reviews', addReview);
 router.get('/reviews/:entity_type/:entity_id', getReviewsByEntity);
 router.get('/reviews/:review_id', getReviewById);
+
+// Public route to get experience media (no authentication required)
+router.get('/experience-media/:experienceName', getExperienceMedia);
 
 
 
