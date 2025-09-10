@@ -233,20 +233,48 @@ const getAllBookings = async (req, res) => {
             console.error('❌ CRITICAL: Error checking table existence:', tableError);
         }
 
-        // Use basic query that works with existing columns
-        const [bookings] = await db.query(`
-            SELECT
-                b.*,
-                COALESCE(u.name, b.guest_name) AS user_name,
-                COALESCE(u.email, b.guest_email) AS user_email,
-                COALESCE(u.phone, b.guest_phone) AS user_phone,
-                s.name AS session_name,
-                s.duration_minutes AS session_duration
-            FROM Bookings b
-            LEFT JOIN Users u ON b.user_id = u.user_id
-            LEFT JOIN VRSessions s ON b.session_id = s.session_id
-            ORDER BY b.created_at DESC
-        `);
+        // Check if guest columns exist
+        const [guestColumns] = await db.query("SHOW COLUMNS FROM Bookings LIKE 'guest_name'");
+        const hasGuestColumns = guestColumns.length > 0;
+
+        // Check if created_at column exists
+        const [createdAtColumns] = await db.query("SHOW COLUMNS FROM Bookings LIKE 'created_at'");
+        const hasCreatedAt = createdAtColumns.length > 0;
+        const orderBy = hasCreatedAt ? 'ORDER BY b.created_at DESC' : 'ORDER BY b.booking_id DESC';
+
+        // Use appropriate query based on available columns
+        let query;
+        if (hasGuestColumns) {
+            query = `
+                SELECT
+                    b.*,
+                    COALESCE(u.name, b.guest_name) AS user_name,
+                    COALESCE(u.email, b.guest_email) AS user_email,
+                    COALESCE(u.phone, b.guest_phone) AS user_phone,
+                    s.name AS session_name,
+                    s.duration_minutes AS session_duration
+                FROM Bookings b
+                LEFT JOIN Users u ON b.user_id = u.user_id
+                LEFT JOIN VRSessions s ON b.session_id = s.session_id
+                ${orderBy}
+            `;
+        } else {
+            query = `
+                SELECT
+                    b.*,
+                    u.name AS user_name,
+                    u.email AS user_email,
+                    u.phone AS user_phone,
+                    s.name AS session_name,
+                    s.duration_minutes AS session_duration
+                FROM Bookings b
+                LEFT JOIN Users u ON b.user_id = u.user_id
+                LEFT JOIN VRSessions s ON b.session_id = s.session_id
+                ${orderBy}
+            `;
+        }
+
+        const [bookings] = await db.query(query);
         console.log(`📋 CRITICAL: Found ${bookings.length} bookings in database`);
 
         if (bookings.length > 0) {
@@ -271,7 +299,7 @@ const getAllBookings = async (req, res) => {
                 let actualDuration = 0;
 
                 // Check if session_count column exists and use it
-                const sessionCount = booking.session_count || 1;
+                const sessionCount = booking.hasOwnProperty('session_count') ? (booking.session_count || 1) : 1;
 
                 // Calculate duration based on session duration and session count
                 if (booking.session_duration) {

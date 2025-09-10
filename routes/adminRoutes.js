@@ -4,7 +4,7 @@ const isAuthenticated = require('../middlewares/authMiddleware')
 const { addDeal, getDeals, updateDeal, deleteDeal } = require('../controllers/dealsController');
 const upload = require('../middlewares/uploadMiddleware');
 const isAdmin = require('../middlewares/adminMiddleware');
-const { getSessionById, getAllSessions, updateSession, updateSessionMedia, createSession } = require('../controllers/sessionsController');
+const { getSessionById, getAllSessions, updateSession, updateSessionMedia, createSession, deleteSession } = require('../controllers/sessionsController');
 const { getAllBookings, updateBooking, deleteBooking, getBookingById } = require('../controllers/bookingController');
 const { addTournament, getAllTournaments, getTournamentById, updateTournament, deleteTournament, getAllRegistrations, getRegistrationById, deleteRegistration, updateRegistration } = require('../controllers/tournamentController');
 const { addEvent, getAllEvents, getEventById, updateEvent, deleteEvent, getAllEventRegistrations, getEventRegistrationById, updateEventRegistration, deleteEventRegistration } = require('../controllers/eventsController');
@@ -17,6 +17,7 @@ const { getReviewsByEntity } = require('../controllers/reviewController');
 const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransactions, getTopSessions, getUserGrowth, getDashboardStats, getOrderStats } = require('../controllers/dashboardController');
 const { runMigrations } = require('../controllers/tablesController');
 const { getExperienceMedia, getAllExperiencesMedia, addExperienceMedia, updateExperienceMedia, deleteExperienceMedia, updateMediaOrder } = require('../controllers/experienceMediaController');
+const { createExperience, getAllExperiences, getExperienceBySlug, updateExperience, deleteExperience } = require('../controllers/experiencesController');
 const db = require('../config/db');
 
 const router = express.Router()
@@ -27,6 +28,7 @@ router.get('/get-sessions',isAuthenticated,isAdmin,getAllSessions)
 router.get("/get-session/:session_id",isAuthenticated,isAdmin,getSessionById)
 router.put('/update-session/:session_id',isAuthenticated,isAdmin,updateSession)
 router.put('/update-session-media/:session_id',isAuthenticated,isAdmin,updateSessionMedia)
+router.delete('/delete-session/:session_id',isAuthenticated,isAdmin,deleteSession)
 
 
 // booking Sessions
@@ -123,12 +125,12 @@ router.put('/notification/:notification_id/read',isAuthenticated,isAdmin,markNot
 router.put('/notifications/mark-all-read',isAuthenticated,isAdmin,markAllNotificationsAsRead)
 
 
-//gift cards
-router.post('/create', isAuthenticated,isAdmin,createGiftCard);
-router.get('/get-all', isAuthenticated,isAdmin,getAllGiftCards);
-router.get('/:id', isAuthenticated,isAdmin,getGiftCardById);
-router.put('/:id', isAuthenticated,isAdmin,updateGiftCard);
-router.delete('/:gift_card_id', isAuthenticated,isAdmin,deleteGiftCard);
+// Gift Cards
+router.post('/gift-cards', isAuthenticated, isAdmin, createGiftCard);
+router.get('/gift-cards', isAuthenticated, isAdmin, getAllGiftCards);
+router.get('/gift-cards/:id', isAuthenticated, isAdmin, getGiftCardById);
+router.put('/gift-cards/:id', isAuthenticated, isAdmin, updateGiftCard);
+router.delete('/gift-cards/:gift_card_id', isAuthenticated, isAdmin, deleteGiftCard);
 
 
 
@@ -159,6 +161,12 @@ router.delete('/delete-deal/:id',deleteDeal)
 // Manual migration route
 router.post('/run-migrations', isAdmin, runMigrations)
 
+// Experiences Management
+router.post('/experiences', isAuthenticated, isAdmin, createExperience);
+router.get('/experiences', isAuthenticated, isAdmin, getAllExperiences);
+router.put('/experiences/:id', isAuthenticated, isAdmin, updateExperience);
+router.delete('/experiences/:id', isAuthenticated, isAdmin, deleteExperience);
+
 // Experience Media Management
 router.get('/experience-media', isAuthenticated, isAdmin, getAllExperiencesMedia);
 router.get('/experience-media/:experienceName', getExperienceMedia); // Public route for user pages
@@ -167,6 +175,43 @@ router.post('/experience-media', upload.single('media'), isAuthenticated, isAdmi
 router.put('/experience-media/:media_id', isAuthenticated, isAdmin, updateExperienceMedia);
 router.delete('/experience-media/:media_id', isAuthenticated, isAdmin, deleteExperienceMedia);
 router.put('/experience-media/:experience_name/order', isAuthenticated, isAdmin, updateMediaOrder);
+
+// Header Image Upload
+router.post('/upload-header-image', upload.single('image'), isAuthenticated, isAdmin, (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+        
+        const imageUrl = `/uploads/${req.file.filename}`;
+        res.json({ success: true, imageUrl });
+    } catch (error) {
+        console.error('Error uploading header image:', error);
+        res.status(500).json({ success: false, message: 'Failed to upload image' });
+    }
+});
+
+// Public Sessions Endpoint for Pricing Calculator
+router.get('/sessions/public/sessions', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT session_id, name, description, duration_minutes, max_players FROM VRSessions WHERE is_active = TRUE ORDER BY name');
+        res.json({ success: true, sessions: rows });
+    } catch (error) {
+        console.error('Error fetching sessions:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch sessions' });
+    }
+});
+
+// Public Pricing Endpoint for Pricing Calculator
+router.get('/sessions/public/pricing', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM SessionPricing WHERE is_active = TRUE');
+        res.json({ success: true, pricing: rows });
+    } catch (error) {
+        console.error('Error fetching session pricing:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch pricing' });
+    }
+});
 
 // Time Passes Management
 router.get('/passes', isAuthenticated, isAdmin, async (req, res) => {

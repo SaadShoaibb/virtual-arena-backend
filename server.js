@@ -672,6 +672,14 @@ mySqlPool.query('SELECT 1')
       // Don't exit on migration errors, just log them
     }
 
+    // Run experiences table migration
+    try {
+      const updateExperiencesTable = require('./migrations/update-experiences-table');
+      await updateExperiencesTable();
+    } catch (error) {
+      console.log("⚠️ Experiences migration warning:".yellow, error.message);
+    }
+
     // ---- CRITICAL: Payment System Migrations ----
     console.log("🔧 Running critical payment system migrations...");
 

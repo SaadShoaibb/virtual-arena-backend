@@ -45,6 +45,17 @@ router.get('/public/pricing', async (req, res) => {
     }
 });
 
+// Public endpoint for active sessions
+router.get('/public/sessions', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT session_id, name, description, duration_minutes, max_players FROM VRSessions WHERE is_active = TRUE ORDER BY name');
+        res.json({ success: true, sessions: rows });
+    } catch (error) {
+        console.error('Error fetching sessions:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch sessions' });
+    }
+});
+
 router.get('/public/group-discounts', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM GroupDiscounts WHERE is_active = TRUE ORDER BY min_players ASC');
@@ -99,7 +110,7 @@ router.post('/group-discounts', isAuthenticated, isAdmin, async (req, res) => {
     }
 });
 
-// Update session pricing
+// Update session pricing - automatically updates pricing calculator
 router.put('/admin-pricing', isAuthenticated, isAdmin, async (req, res) => {
     try {
         const { session_id, session_count, price } = req.body;

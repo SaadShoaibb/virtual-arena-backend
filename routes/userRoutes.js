@@ -12,8 +12,13 @@ const { getUserNotifications, markNotificationAsRead, markAllNotificationsAsRead
 const { purchaseGiftCard, getUserGiftCards, redeemGiftCard, getAllGiftCards, getUserGiftCardByCode } = require('../controllers/giftCardController')
 const { addReview, getReviewsByEntity, getReviewById } = require('../controllers/reviewController')
 const { getExperienceMedia } = require('../controllers/experienceMediaController')
+const { getAllExperiences, getExperienceBySlug } = require('../controllers/experiencesController')
 
 const router = express.Router()
+// --- PUBLIC EXPERIENCE ROUTES (must come before any parameterised routes) ---
+router.get('/experiences', getAllExperiences); // List for dropdown
+router.get('/experiences/:slug', getExperienceBySlug); // Detail page
+
 // routes
 
 
@@ -112,7 +117,8 @@ router.put('/notifications/read-all',isAuthenticated,markAllNotificationsAsRead)
 //gift cards
 router.get('/gift-cards', isAuthenticated,getAllGiftCards);
 router.post('/purchase', isAuthenticated,purchaseGiftCard);
-router.get('/:user_id', isAuthenticated,getUserGiftCards);
+// Get gift cards belonging to a specific user
+router.get('/gift-cards/user/:user_id', isAuthenticated, getUserGiftCards);
 router.get('/card/:code', isAuthenticated,getUserGiftCardByCode);
 router.post('/redeem', isAuthenticated,redeemGiftCard);
 
@@ -124,6 +130,7 @@ router.get('/reviews/:review_id', getReviewById);
 
 // Public route to get experience media (no authentication required)
 router.get('/experience-media/:experienceName', getExperienceMedia);
+
 
 
 

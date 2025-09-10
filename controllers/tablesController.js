@@ -603,8 +603,45 @@ const createTables = async () => {
         );`
         )
 
+        // Experiences Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS Experiences (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                slug VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                features JSON NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_slug (slug),
+                INDEX idx_is_active (is_active)
+            ) ENGINE=InnoDB;
+        `);
 
+        // Add header_image_url column if it doesn't exist
+        try {
+            const [cols] = await db.query(`SHOW COLUMNS FROM Experiences LIKE 'header_image_url'`);
+            if (cols.length === 0) {
+                await db.query(`ALTER TABLE Experiences ADD COLUMN header_image_url VARCHAR(500) NULL AFTER features`);
+                console.log('Added header_image_url column to Experiences');
+            }
+        } catch (err) {
+            console.error('Error adding header_image_url column:', err.message);
+        }
 
+        // ExperienceMedia Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS ExperienceMedia (
+                media_id INT AUTO_INCREMENT PRIMARY KEY,
+                experience_id INT NULL,
+                experience_name VARCHAR(255) NOT NULL,
+                media_type ENUM('image', 'video') NOT NULL,
+                media_url VARCHAR(500) NOT NULL,
+                media_order INT DEFAULT 0,
+                FOREIGN KEY (experience_id) REFERENCES Experiences(id) ON DELETE SET NULL
+            );
+        `);
 
         // ShippingInformation
         await db.query(`
