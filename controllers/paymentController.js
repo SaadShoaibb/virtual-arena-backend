@@ -1,6 +1,18 @@
 require('dotenv').config(); // Load environment variables from .env
 const db = require('../config/db');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // Use Stripe secret key from .env
+
+// Initialize Stripe with error handling
+let stripe;
+try {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    throw new Error('STRIPE_SECRET_KEY environment variable is not set');
+  }
+  stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  console.log('✅ Stripe initialized successfully');
+} catch (error) {
+  console.error('❌ Failed to initialize Stripe:', error.message);
+  // Don't crash the entire app, let individual requests handle the error
+}
 
 /**
  * Create a Stripe Checkout Session
@@ -14,8 +26,18 @@ const createCheckoutSession = async (req, res) => {
     console.log('Environment check:', {
       nodeEnv: process.env.NODE_ENV,
       stripeKey: process.env.STRIPE_SECRET_KEY ? 'Present' : 'Missing',
-      frontendUrl: process.env.FRONTEND_URL || 'Missing'
+      frontendUrl: process.env.FRONTEND_URL || 'Missing',
+      stripeInitialized: stripe ? 'Yes' : 'No'
     });
+
+    // Check if Stripe is properly initialized
+    if (!stripe) {
+      console.error('❌ Stripe not initialized - cannot create checkout session');
+      return res.status(500).json({
+        success: false,
+        message: 'Payment system not available - Stripe not initialized'
+      });
+    }
     const { user_id, amount, connected_account_id, entity_type, entity_id, guest_info } = req.body;
     const numericAmount = Number(amount);
     
@@ -229,6 +251,15 @@ const confirmPayment = async (req, res) => {
     
     if (!session_id) {
       return res.status(400).json({ success: false, message: 'Session ID is required' });
+    }
+
+    // Check if Stripe is properly initialized
+    if (!stripe) {
+      console.error('❌ Stripe not initialized - cannot confirm payment');
+      return res.status(500).json({
+        success: false,
+        message: 'Payment system not available - Stripe not initialized'
+      });
     }
     
     // Retrieve the session from Stripe to verify actual payment status
