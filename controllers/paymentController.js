@@ -9,7 +9,13 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // Use Stripe s
  */
 const createCheckoutSession = async (req, res) => {
   try {
-    console.log('Received checkout session request:', req.body);
+    console.log('🔄 Creating checkout session...');
+    console.log('Request body:', req.body);
+    console.log('Environment check:', {
+      nodeEnv: process.env.NODE_ENV,
+      stripeKey: process.env.STRIPE_SECRET_KEY ? 'Present' : 'Missing',
+      frontendUrl: process.env.FRONTEND_URL || 'Missing'
+    });
     const { user_id, amount, connected_account_id, entity_type, entity_id, guest_info } = req.body;
     const numericAmount = Number(amount);
     
@@ -194,46 +200,9 @@ const createCheckoutSession = async (req, res) => {
       url: session.url
     });
 
-    // Development fallback: Auto-complete payment after 30 seconds if webhook doesn't work
-    // DISABLED: This fallback was causing payments to be marked as paid even when cancelled
-    const fallbackEnabled = false; // process.env.STRIPE_FALLBACK_AUTO_COMPLETE === 'true';
-    if (false && process.env.NODE_ENV !== 'production' && fallbackEnabled) {
-      setTimeout(async () => {
-        try {
-          console.log(`🔄 Development fallback: Checking payment status for session ${session.id}`);
-
-          // Check if payment is still pending
-          const [pendingPayment] = await db.query(
-            'SELECT payment_id, entity_id, entity_type FROM Payments WHERE checkout_session_id = ? AND status = ?',
-            [session.id, 'pending']
-          );
-
-          if (pendingPayment.length > 0) {
-            const payment = pendingPayment[0];
-            console.log(`⚠️ Payment ${payment.payment_id} still pending after 30s, auto-completing...`);
-
-            // Update payment status
-            await db.query(
-              'UPDATE Payments SET status = ?, updated_at = NOW() WHERE payment_id = ?',
-              ['succeeded', payment.payment_id]
-            );
-
-            // Update booking status if it's a booking
-            if (payment.entity_type === 'booking') {
-              await db.query(
-                'UPDATE Bookings SET payment_status = ? WHERE booking_id = ?',
-                ['paid', payment.entity_id]
-              );
-              console.log(`✅ Development fallback: Auto-completed booking ${payment.entity_id}`);
-            }
-          }
-        } catch (error) {
-          console.log(`⚠️ Development fallback error:`, error.message);
-        }
-      }, 30000); // 30 seconds delay
-    }
-    
-    console.log('ℹ️ Stripe fallback auto-complete DISABLED to prevent false payment confirmations. Awaiting webhook confirmation.');
+    // Development fallback: COMPLETELY REMOVED to prevent false payment confirmations
+    // Payments will only be confirmed through proper Stripe webhooks
+    console.log('ℹ️ Payment created successfully. Awaiting Stripe webhook confirmation.');
   } catch (err) {
     console.error('Error creating checkout session:', err);
     console.error('Error details:', {
