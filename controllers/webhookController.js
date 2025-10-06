@@ -68,16 +68,40 @@ const handleWebhook = async (req, res) => {
  */
 async function handleCheckoutSessionCompleted(session) {
   try {
-    console.log('🎉 Processing checkout.session.completed:', session.id);
+    const sessionId = session.id;
+    console.log('🎉 Processing checkout.session.completed:', sessionId);
+
+    let latestSession = session;
+    try {
+      latestSession = await stripe.checkout.sessions.retrieve(sessionId);
+      console.log('🔍 Verified session state from Stripe:', {
+        id: latestSession.id,
+        status: latestSession.status,
+        payment_status: latestSession.payment_status
+      });
+    } catch (fetchError) {
+      console.error(`⚠️ Unable to refresh session ${sessionId} from Stripe: ${fetchError.message}`);
+    }
+
+    const paymentStatus = latestSession.payment_status || session.payment_status;
+    const sessionMetadata = latestSession.metadata || session.metadata || {};
+
     console.log('💳 Session details:', {
-      id: session.id,
-      payment_status: session.payment_status,
-      amount_total: session.amount_total,
-      metadata: session.metadata
+      id: sessionId,
+      payment_status: paymentStatus,
+      amount_total: latestSession.amount_total ?? session.amount_total,
+      metadata: sessionMetadata
     });
 
+    // ⚠️ CRITICAL: Only process if payment is actually completed
+    // checkout.session.completed fires even for unpaid sessions with some payment methods
+    if (paymentStatus !== 'paid') {
+      console.log(`⚠️ Checkout session completed but payment status is '${paymentStatus}', not 'paid'. Skipping.`);
+      return;
+    }
+
     // Extract metadata from the session
-    const { user_id, entity_id, entity_type } = session.metadata || {};
+    const { user_id, entity_id, entity_type } = sessionMetadata;
 
     console.log('Webhook metadata:', { user_id, entity_id, entity_type });
 
@@ -125,7 +149,7 @@ async function handleCheckoutSessionCompleted(session) {
         AND status = 'pending'
     `;
 
-    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
+    await db.query(updateQuery, [sessionId, user_id, entity_id, entity_type]);
     
     // Update entity status based on entity_type
     console.log(`🔄 Processing payment success for entity_type: ${entity_type}, entity_id: ${entity_id}, user_id: ${user_id}`);

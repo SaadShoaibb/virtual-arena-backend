@@ -195,7 +195,9 @@ const createCheckoutSession = async (req, res) => {
     });
 
     // Development fallback: Auto-complete payment after 30 seconds if webhook doesn't work
-    if (process.env.NODE_ENV !== 'production') {
+    // DISABLED: This fallback was causing payments to be marked as paid even when cancelled
+    const fallbackEnabled = false; // process.env.STRIPE_FALLBACK_AUTO_COMPLETE === 'true';
+    if (false && process.env.NODE_ENV !== 'production' && fallbackEnabled) {
       setTimeout(async () => {
         try {
           console.log(`🔄 Development fallback: Checking payment status for session ${session.id}`);
@@ -230,6 +232,8 @@ const createCheckoutSession = async (req, res) => {
         }
       }, 30000); // 30 seconds delay
     }
+    
+    console.log('ℹ️ Stripe fallback auto-complete DISABLED to prevent false payment confirmations. Awaiting webhook confirmation.');
   } catch (err) {
     console.error('Error creating checkout session:', err);
     res.status(500).json({ 
@@ -251,15 +255,18 @@ const confirmPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Session ID is required' });
     }
     
-    // Retrieve the session from Stripe
+    // Retrieve the session from Stripe to verify actual payment status
     const session = await stripe.checkout.sessions.retrieve(session_id);
     
     if (!session) {
       return res.status(404).json({ success: false, message: 'Session not found' });
     }
     
-    // Check if payment was successful
+    console.log(`🔍 Confirming payment for session ${session_id}: status=${session.status}, payment_status=${session.payment_status}`);
+    
+    // Check if payment was successful - CRITICAL: Only proceed if actually paid
     if (session.payment_status !== 'paid') {
+      console.log(`❌ Payment confirmation rejected: session ${session_id} has payment_status='${session.payment_status}', not 'paid'`);
       return res.status(400).json({ 
         success: false, 
         message: 'Payment not completed', 
