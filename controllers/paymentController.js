@@ -236,9 +236,16 @@ const createCheckoutSession = async (req, res) => {
     console.log('ℹ️ Stripe fallback auto-complete DISABLED to prevent false payment confirmations. Awaiting webhook confirmation.');
   } catch (err) {
     console.error('Error creating checkout session:', err);
+    console.error('Error details:', {
+      message: err.message,
+      stack: err.stack,
+      stripeKey: process.env.STRIPE_SECRET_KEY ? 'Present' : 'Missing',
+      frontendUrl: process.env.FRONTEND_URL || 'Missing'
+    });
     res.status(500).json({ 
       success: false, 
-      message: 'Internal server error' 
+      message: 'Internal server error',
+      error: err.message // Add error details for debugging
     });
   }
 };
