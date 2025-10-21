@@ -18,6 +18,7 @@ const { getDashboardMetrics, getRevenueReport, getRevenueData, getRecentTransact
 const { runMigrations } = require('../controllers/tablesController');
 const { getExperienceMedia, getAllExperiencesMedia, addExperienceMedia, updateExperienceMedia, deleteExperienceMedia, updateMediaOrder } = require('../controllers/experienceMediaController');
 const { createExperience, getAllExperiences, getExperienceBySlug, updateExperience, deleteExperience } = require('../controllers/experiencesController');
+const { getFAQs, createFAQ, updateFAQ, deleteFAQ, getTestimonials, createTestimonial, updateTestimonial, deleteTestimonial } = require('../controllers/homepageController');
 const db = require('../config/db');
 
 const router = express.Router()
@@ -273,6 +274,18 @@ router.post('/passes', isAuthenticated, isAdmin, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to create pass' });
     }
 });
+
+// Homepage CMS - FAQs
+router.get('/faqs', getFAQs);
+router.post('/faqs', isAuthenticated, isAdmin, createFAQ);
+router.put('/faqs/:id', isAuthenticated, isAdmin, updateFAQ);
+router.delete('/faqs/:id', isAuthenticated, isAdmin, deleteFAQ);
+
+// Homepage CMS - Testimonials
+router.get('/testimonials', getTestimonials);
+router.post('/testimonials', isAuthenticated, isAdmin, createTestimonial);
+router.put('/testimonials/:id', isAuthenticated, isAdmin, updateTestimonial);
+router.delete('/testimonials/:id', isAuthenticated, isAdmin, deleteTestimonial);
 
 // Update pass pricing specifically for pricing management
 router.put('/passes/:passId/pricing', isAuthenticated, isAdmin, async (req, res) => {

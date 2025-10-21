@@ -54,7 +54,7 @@ const createCheckoutSession = async (req, res) => {
     if (Number.isNaN(numericAmount) || numericAmount < 0.5) {
       return res.status(400).json({
         success: false,
-        message: 'Amount must be a number and at least 0.50 USD'
+        message: 'Amount must be a number and at least 0.50 CAD'
       });
     }
 
@@ -111,7 +111,7 @@ const createCheckoutSession = async (req, res) => {
     // Create a generic line item
     const lineItems = [{
       price_data: {
-        currency: 'usd',
+        currency: 'cad',
         product_data: {
           name: 'Generic Payment',
           description: 'Virtual Arena Payment',
@@ -122,7 +122,7 @@ const createCheckoutSession = async (req, res) => {
     }];
 
     const successUrl = `${process.env.FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${process.env.FRONTEND_URL}/checkout/cancel`;
+    const cancelUrl = `${process.env.FRONTEND_URL}/checkout/cancel?entity_type=${entity_type || 'order'}&entity_id=${entity_id || '0'}`;
 
     // Create Stripe checkout session parameters
     const sessionParams = {
@@ -173,7 +173,7 @@ const createCheckoutSession = async (req, res) => {
         entity_type || 'order',
         entity_id || 0,
         numericAmount,
-        'usd', // default currency
+        'cad', // Canadian dollars
         session.id,
         connected_account_id || null
       ]

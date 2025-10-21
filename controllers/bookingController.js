@@ -18,6 +18,7 @@ const pusher = new Pusher({
 // ✅ Create a new booking
 const createBooking = async (req, res) => {
     try {
+        console.log('🎯 CREATE BOOKING CALLED');
         const user_id = req.user.id; // Get the logged-in user's ID
         const {
             session_id,
@@ -34,60 +35,39 @@ const createBooking = async (req, res) => {
             total_amount = 0
         } = req.body;
 
+        console.log('📥 Request body:', req.body);
+        console.log('👤 User ID:', user_id);
+
         const isPassBooking = !!pass_id && !session_id;
 
-        // 1️⃣ Check for existing active booking for this session (only for session bookings)
+        // Check for time slot conflicts (prevent double bookings)
         if (!isPassBooking && session_id) {
-            const [existingBookings] = await db.query(
-                `SELECT * FROM Bookings
-                 WHERE user_id = ? AND session_id = ?
+            const formattedStartTime = formatDateTimeForMySQL(start_time);
+            const formattedEndTime = formatDateTimeForMySQL(end_time);
+            
+            const [conflicts] = await db.query(
+                `SELECT booking_id, payment_status, session_status, start_time, end_time FROM Bookings
+                 WHERE session_id = ?
+                 AND payment_status IN ('pending', 'paid')
                  AND session_status IN ('pending', 'started')
-                 AND payment_status != 'cancelled'`,
-                [user_id, session_id]
+                 AND (
+                     (start_time < ? AND end_time > ?) OR
+                     (start_time < ? AND end_time > ?) OR
+                     (start_time >= ? AND end_time <= ?)
+                 )`,
+                [session_id, formattedEndTime, formattedStartTime, formattedEndTime, formattedStartTime, formattedStartTime, formattedEndTime]
             );
 
-            if (existingBookings.length > 0) {
+            if (conflicts.length > 0) {
+                console.log('⚠️ Time slot conflict detected:', conflicts);
                 return res.status(400).json({
                     success: false,
-                    message: 'You already have an active or pending booking for this session.',
+                    message: 'This time slot is already booked. Please select a different time.'
                 });
             }
         }
 
-        // 2️⃣ For session bookings, validate capacity; skip for passes
-        if (!isPassBooking && session_id) {
-            const [session] = await db.query(
-                `SELECT max_players FROM VRSessions WHERE session_id = ?`,
-                [session_id]
-            );
-
-            if (session.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Session not found',
-                });
-            }
-
-            const maxPlayers = session[0].max_players;
-
-            const [bookedCount] = await db.query(
-                `SELECT COUNT(*) AS currentBookings
-                 FROM Bookings
-                 WHERE session_id = ? AND payment_status IN ('pending', 'paid')`,
-                [session_id]
-            );
-
-            const currentBookings = bookedCount[0].currentBookings;
-
-            if (currentBookings >= maxPlayers) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'No seats are available for this session',
-                });
-            }
-        }
-
-        // 3️⃣ Proceed with booking
+        // Proceed with booking
         const formattedStartTime = formatDateTimeForMySQL(start_time);
         const formattedEndTime = formatDateTimeForMySQL(end_time);
 
@@ -287,11 +267,6 @@ const getAllBookings = async (req, res) => {
             });
         }
 
-        // Update status for each booking
-        for (const booking of bookings) {
-            await updateBookingStatus(booking.booking_id);
-        }
-
         // Process bookings to calculate correct durations and end times
         const processedBookings = bookings.map(booking => {
             try {
@@ -396,13 +371,22 @@ const updateBooking = async (req, res) => {
     try {
         const user_id = req.user.id;
         const { booking_id } = req.params;
-        const { machine_type, start_time, end_time, payment_status } = req.body;
+        let { machine_type, start_time, end_time, payment_status, session_status } = req.body;
+
+        // Sync statuses: if session_status is cancelled, payment_status must also be cancelled
+        if (session_status === 'cancelled') {
+            payment_status = 'cancelled';
+        }
+        // If payment_status is cancelled, session_status must also be cancelled
+        if (payment_status === 'cancelled') {
+            session_status = 'cancelled';
+        }
 
         const [result] = await db.query(`
             UPDATE Bookings 
-            SET  machine_type = ?, start_time = ?, end_time = ?, payment_status = ? 
+            SET  machine_type = ?, start_time = ?, end_time = ?, payment_status = ?, session_status = ? 
             WHERE booking_id = ?`,
-            [machine_type, start_time, end_time, payment_status, booking_id]
+            [machine_type, start_time, end_time, payment_status, session_status || 'pending', booking_id]
         );
 
         if (result.affectedRows === 0) {
@@ -437,9 +421,11 @@ const updateBooking = async (req, res) => {
 const cancelBooking = async (req, res) => {
     try {
         const { booking_id } = req.params;
-        const user_id = req.user.id;
-        const [result] = await db.query(`
-            UPDATE Bookings SET payment_status = 'cancelled' WHERE booking_id = ?`,
+        const user_id = req.user ? req.user.id : null;
+        
+        // Update both payment_status and session_status to cancelled
+        const [result] = await db.query(
+            "UPDATE Bookings SET payment_status = 'cancelled', session_status = 'cancelled' WHERE booking_id = ?",
             [booking_id]
         );
 
@@ -469,12 +455,21 @@ const cancelBooking = async (req, res) => {
             'email', // Delivery method
             `/bookings/all-bookings?booking_id=${booking_id}` // Link
         );
-        // Step 6: Trigger Pusher event
+        // Trigger Pusher event for real-time update
         pusher.trigger('my-channel', 'my-event', {
             message: 'Booking cancelled',
             bookingId: booking_id,
-            userId: user_id
+            userId: user_id,
+            action: 'cancel'
         });
+        
+        // Trigger specific booking update event
+        pusher.trigger('bookings-channel', 'booking-updated', {
+            booking_id,
+            status: 'cancelled',
+            action: 'cancel'
+        });
+        
         res.status(200).json({
             success: true,
             message: 'Booking cancelled successfully',
@@ -672,25 +667,29 @@ const createGuestBooking = async (req, res) => {
         // Generate unique booking reference
         const booking_reference = `GUEST-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
 
-        // Check for conflicting bookings (only applicable for session bookings)
+        // Check for time slot conflicts (prevent double bookings)
         if (!isPassBooking && session_id) {
-            const [conflictingBookings] = await db.query(
-                `SELECT * FROM Bookings
+            const formattedStartTime = formatDateTimeForMySQL(start_time);
+            const formattedEndTime = formatDateTimeForMySQL(end_time);
+            
+            const [conflicts] = await db.query(
+                `SELECT booking_id, payment_status, session_status, start_time, end_time FROM Bookings
                  WHERE session_id = ?
-                 AND machine_type = ?
-                 AND payment_status != 'cancelled'
+                 AND payment_status IN ('pending', 'paid')
+                 AND session_status IN ('pending', 'started')
                  AND (
-                     (start_time <= ? AND end_time > ?) OR
-                     (start_time < ? AND end_time >= ?) OR
+                     (start_time < ? AND end_time > ?) OR
+                     (start_time < ? AND end_time > ?) OR
                      (start_time >= ? AND end_time <= ?)
                  )`,
-                [session_id, machine_type, start_time, start_time, end_time, end_time, start_time, end_time]
+                [session_id, formattedEndTime, formattedStartTime, formattedEndTime, formattedStartTime, formattedStartTime, formattedEndTime]
             );
 
-            if (conflictingBookings.length > 0) {
+            if (conflicts.length > 0) {
+                console.log('⚠️ Guest booking: Time slot conflict detected:', conflicts);
                 return res.status(400).json({
                     success: false,
-                    message: 'Time slot is already booked. Please choose a different time.'
+                    message: 'This time slot is already booked. Please select a different time.'
                 });
             }
         }

@@ -1,6 +1,7 @@
 require('dotenv').config();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const db = require('../config/db');
+const sendEmailNotification = require('../services/emailNotification');
 
 /**
  * Handle Stripe webhook events
@@ -163,6 +164,7 @@ async function handleCheckoutSessionCompleted(session) {
       case 'booking':
         console.log(`📅 Updating booking ${entity_id} status to paid`);
         await updateBookingStatus(entity_id, 'paid');
+        await sendBookingConfirmationEmail(entity_id, user_id);
         break;
       case 'tournament':
         await updateTournamentRegistrationStatus(entity_id, 'paid');
@@ -192,7 +194,7 @@ async function handleExpiredCheckoutSession(session) {
     // Extract metadata from the session
     const { user_id, entity_id, entity_type } = session.metadata || {};
     
-    if (!user_id || !entity_id || !entity_type) {
+    if (!entity_id || !entity_type) {
       console.error('Missing required metadata in checkout session:', session.id);
       return;
     }
@@ -203,13 +205,21 @@ async function handleExpiredCheckoutSession(session) {
       SET status = 'expired', 
           checkout_session_id = ?, 
           updated_at = NOW() 
-      WHERE user_id = ? 
-        AND entity_id = ? 
+      WHERE entity_id = ? 
         AND entity_type = ? 
         AND status = 'pending'
     `;
 
-    await db.query(updateQuery, [session.id, user_id, entity_id, entity_type]);
+    await db.query(updateQuery, [session.id, entity_id, entity_type]);
+    
+    // If it's a booking, mark it as cancelled
+    if (entity_type === 'booking') {
+      await db.query(
+        'UPDATE Bookings SET payment_status = \'cancelled\', session_status = \'cancelled\' WHERE booking_id = ?',
+        [entity_id]
+      );
+      console.log(`Booking ${entity_id} marked as cancelled due to expired session`);
+    }
     
     console.log(`Payment for ${entity_type} ${entity_id} marked as expired`);
   } catch (error) {
@@ -447,14 +457,19 @@ async function updateBookingStatus(bookingId, paymentStatus) {
   try {
     console.log(`Attempting to update booking ${bookingId} payment_status to ${paymentStatus}`);
 
-    const updateQuery = `
-      UPDATE Bookings
-      SET payment_status = ?
-      WHERE booking_id = ?
-    `;
+    // If payment is cancelled, also set session_status to cancelled
+    const sessionStatus = paymentStatus === 'cancelled' ? 'cancelled' : null;
+    
+    const updateQuery = sessionStatus 
+      ? `UPDATE Bookings SET payment_status = ?, session_status = ? WHERE booking_id = ?`
+      : `UPDATE Bookings SET payment_status = ? WHERE booking_id = ?`;
+    
+    const params = sessionStatus 
+      ? [paymentStatus, sessionStatus, bookingId]
+      : [paymentStatus, bookingId];
 
-    const [result] = await db.query(updateQuery, [paymentStatus, bookingId]);
-    console.log(`Booking ${bookingId} payment_status updated to ${paymentStatus}. Affected rows: ${result.affectedRows}`);
+    const [result] = await db.query(updateQuery, params);
+    console.log(`Booking ${bookingId} payment_status updated to ${paymentStatus}${sessionStatus ? `, session_status to ${sessionStatus}` : ''}. Affected rows: ${result.affectedRows}`);
 
     if (result.affectedRows === 0) {
       console.warn(`No booking found with ID ${bookingId}`);
@@ -601,3 +616,79 @@ module.exports = {
   handleWebhook,
   getWebhookStatus
 };
+
+
+async function sendBookingConfirmationEmail(bookingId, userId) {
+  try {
+    console.log(`📧 Sending booking confirmation email for booking ${bookingId}`);
+
+    const [bookings] = await db.query(`
+      SELECT 
+        b.*,
+        COALESCE(u.email, b.guest_email) as customer_email,
+        COALESCE(u.name, b.guest_name) as customer_name,
+        s.name as session_name
+      FROM Bookings b
+      LEFT JOIN Users u ON b.user_id = u.user_id
+      LEFT JOIN VRSessions s ON b.session_id = s.session_id
+      WHERE b.booking_id = ?
+    `, [bookingId]);
+
+    if (bookings.length === 0) {
+      console.error(`Booking ${bookingId} not found`);
+      return;
+    }
+
+    const booking = bookings[0];
+    const customerEmail = booking.customer_email;
+    const customerName = booking.customer_name || 'Valued Customer';
+
+    if (!customerEmail) {
+      console.error(`No email found for booking ${bookingId}`);
+      return;
+    }
+
+    const startTime = new Date(booking.start_time).toLocaleString('en-CA', {
+      timeZone: 'America/Edmonton',
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    const subject = `Booking Confirmation - Virtual Arena (Booking #${bookingId})`;
+    const message = `
+Dear ${customerName},
+
+Thank you for your booking at Virtual Arena!
+
+Your booking has been confirmed and payment has been received.
+
+=== BOOKING DETAILS ===
+Booking ID: ${bookingId}
+Session: ${booking.session_name || 'VR Experience'}
+Date & Time: ${startTime}
+Amount Paid: $${booking.total_amount || booking.price || '0.00'} CAD
+Payment Status: Confirmed
+
+=== LOCATION ===
+Virtual Arena
+Edmonton, AB, Canada
+
+Please arrive 10-15 minutes before your scheduled time.
+
+If you have any questions or need to make changes to your booking, please contact us.
+
+Thank you for choosing Virtual Arena!
+
+Best regards,
+The Virtual Arena Team
+
+---
+This is an automated confirmation email. Please do not reply to this email.
+    `;
+
+    await sendEmailNotification(customerEmail, subject, message);
+    console.log(`✅ Booking confirmation email sent to ${customerEmail}`);
+  } catch (error) {
+    console.error(`❌ Error sending booking confirmation email:`, error);
+  }
+}
